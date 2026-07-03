@@ -17,5 +17,17 @@ declare global {
         os_release: string;
       }>;
     };
+    electronPrinter?: {
+      getPrinters: () => Promise<
+        {
+          name: string;
+          displayName: string;
+          description: string;
+          options: Record<string, unknown>;
+        }[]
+      >;
+      printHtml: (payload: { html: string; printerName?: string }) => Promise<boolean>;
+      exportPdf: (payload: { html: string; defaultPath?: string }) => Promise<string | null>;
+    };
   }
 }

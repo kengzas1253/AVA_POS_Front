@@ -13,3 +13,11 @@ contextBridge.exposeInMainWorld("electronStore", {
 contextBridge.exposeInMainWorld("electronDevice", {
   getInfo: () => ipcRenderer.invoke("electron-device-get-info"),
 });
+
+contextBridge.exposeInMainWorld("electronPrinter", {
+  getPrinters: () => ipcRenderer.invoke("electron-printer-get-printers"),
+  printHtml: (payload: { html: string; printerName?: string }) =>
+    ipcRenderer.invoke("electron-printer-print-html", payload),
+  exportPdf: (payload: { html: string; defaultPath?: string }) =>
+    ipcRenderer.invoke("electron-printer-export-pdf", payload),
+});

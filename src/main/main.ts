@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import os from "node:os";
 import path from "node:path";
 
@@ -59,9 +59,35 @@ const createWindow = (): void => {
   mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
 };
 
+const createPrintWindow = async (html: string): Promise<BrowserWindow> => {
+  const printWindow = new BrowserWindow({
+    width: 900,
+    height: 700,
+    show: false,
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  return printWindow;
+};
+
 app.whenReady().then(async () => {
-  const { default: Store } = await import("electron-store");
+  const [{ default: Store }, { default: contextMenu }] = await Promise.all([
+    import("electron-store"),
+    import("electron-context-menu"),
+  ]);
   const store = new Store();
+
+  contextMenu({
+    showLookUpSelection: false,
+    showSearchWithGoogle: false,
+    showSelectAll: true,
+    showInspectElement: false,
+  });
 
   ipcMain.handle("app:get-version", () => app.getVersion());
 
@@ -80,6 +106,77 @@ app.whenReady().then(async () => {
     os_platform: os.platform(),
     os_release: os.release(),
   }));
+
+  ipcMain.handle("electron-printer-get-printers", async (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window) {
+      return [];
+    }
+
+    return window.webContents.getPrintersAsync();
+  });
+
+  ipcMain.handle(
+    "electron-printer-print-html",
+    async (_event, payload: { html: string; printerName?: string }) => {
+      const printWindow = await createPrintWindow(payload.html);
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          printWindow.webContents.print(
+            {
+              silent: Boolean(payload.printerName),
+              deviceName: payload.printerName || undefined,
+              printBackground: true,
+            },
+            (success, failureReason) => {
+              if (success) {
+                resolve();
+                return;
+              }
+
+              reject(new Error(failureReason || "Print failed"));
+            },
+          );
+        });
+
+        return true;
+      } finally {
+        printWindow.close();
+      }
+    },
+  );
+
+  ipcMain.handle(
+    "electron-printer-export-pdf",
+    async (_event, payload: { html: string; defaultPath?: string }) => {
+      const printWindow = await createPrintWindow(payload.html);
+
+      try {
+        const result = await dialog.showSaveDialog({
+          title: "Export barcode PDF",
+          defaultPath: payload.defaultPath || "barcodes.pdf",
+          filters: [{ name: "PDF", extensions: ["pdf"] }],
+        });
+
+        if (result.canceled || !result.filePath) {
+          return null;
+        }
+
+        const pdf = await printWindow.webContents.printToPDF({
+          printBackground: true,
+          preferCSSPageSize: true,
+        });
+
+        const { writeFile } = await import("node:fs/promises");
+        await writeFile(result.filePath, pdf);
+
+        return result.filePath;
+      } finally {
+        printWindow.close();
+      }
+    },
+  );
 
   createWindow();
 

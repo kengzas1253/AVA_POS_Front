@@ -254,13 +254,19 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     
+    // ✨ NEW: Check if API is connected first
+    if (!apiStatus.connected) {
+      setMessage("⚠️ ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้ กรุณาตรวจสอบการตั้งค่า API");
+      return;
+    }
+
     // Check if API Path and POS Device exist
     if (!hasApiPath) {
-      setMessage("กรุณาตั้งค่า API path ก่อนเข้าสู่ระบบ");
+      setMessage("⚠️ กรุณาตั้งค่า API path ก่อนเข้าสู่ระบบ");
       return;
     }
     if (!hasPosDevice) {
-      setMessage("กรุณาตั้งค่าเครื่อง POS ก่อนเข้าสู่ระบบ");
+      setMessage("⚠️ กรุณาตั้งค่าเครื่อง POS ก่อนเข้าสู่ระบบ");
       return;
     }
 
@@ -327,6 +333,9 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
       setIsLoading(false);
     }
   };
+
+  // ✨ NEW: Check if login should be disabled
+  const isLoginDisabled = isLoading || !hasApiPath || !hasPosDevice || !apiStatus.connected || apiStatus.checking;
 
   if (loginMode === "pin") return <LoginPin onBack={() => setLoginMode("password")} onLoginSuccess={onLoginSuccess} />;
   if (loginMode === "apiSetting") return <ApiPathSetting onBack={() => setLoginMode("password")} />;
@@ -540,8 +549,10 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
             {/* Submit */}
             <button
               type="submit"
-              disabled={isLoading || !hasApiPath || !hasPosDevice}
-              className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-teal-500 text-sm font-medium text-white transition hover:bg-teal-400 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={isLoginDisabled}
+              className={`flex h-11 w-full items-center justify-center gap-2 rounded-lg text-sm font-medium text-white transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${
+                isLoginDisabled ? "bg-slate-400" : "bg-teal-500 hover:bg-teal-400"
+              }`}
             >
               {isLoading ? (
                 <>
@@ -573,7 +584,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
             <button
               type="button"
               onClick={() => setLoginMode("pin")}
-              disabled={isLoading}
+              disabled={isLoginDisabled}
               className="flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-slate-50 text-sm text-slate-600 transition hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -590,8 +601,19 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
               เข้าสู่ระบบด้วย PIN
             </button>
 
+            {/* ✨ NEW: API connection error message - more visible */}
+            {!apiStatus.connected && !apiStatus.checking && (
+              <div className="mt-4 rounded-lg border border-red-400/30 bg-red-400/10 px-4 py-2.5 text-[12px] text-red-600 dark:text-red-400">
+                <span className="font-semibold">❌ ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้</span>
+                <br />
+                <span className="text-[11px] opacity-70">
+                  {apiStatus.message ?? "กรุณาตรวจสอบการตั้งค่า API path และให้แน่ใจว่าเซิร์ฟเวอร์กำลังทำงานอยู่"}
+                </span>
+              </div>
+            )}
+
             {/* Settings status message */}
-            {(!hasApiPath || !hasPosDevice) && !message && (
+            {(!hasApiPath || !hasPosDevice) && !message && apiStatus.connected && (
               <p className="mt-4 rounded-lg border border-amber-400/30 bg-amber-400/10 px-4 py-2.5 text-[12px] text-amber-600 dark:text-amber-400">
                 {!hasApiPath && !hasPosDevice && "⚠️ กรุณาตั้งค่า API path และเครื่อง POS ก่อนเข้าสู่ระบบ"}
                 {!hasApiPath && hasPosDevice && "⚠️ กรุณาตั้งค่า API path ก่อนเข้าสู่ระบบ"}

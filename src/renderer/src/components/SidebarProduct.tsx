@@ -1,78 +1,24 @@
-import { useEffect, useState } from "react";
 import {
-  IconBarcode,
   IconCategory,
+  IconArrowBackUp,
   IconChevronLeft,
   IconChevronRight,
   IconDeviceLaptop,
-  IconLogout,
   IconPackage,
-  IconUser,
-  IconArrowBackUp,
+  IconBarcode,
+  IconFileInvoice, // เพิ่มไอคอนสำหรับใบเสนอราคา
+  IconGift, // เพิ่มไอคอนสำหรับโปรโมชั่น
 } from "@tabler/icons-react";
-import { logoutAndClearSession } from "./auth";
+import AccountBar from "./AccountBar";
+import Logoutbar from "./Logoutbar";
 
 interface SidebarProductProps {
   isOpen: boolean;
   onToggle: () => void;
   onNavigate: (page: string) => void;
   currentPage: string;
-  onSwitchSidebar?: () => void; // เพิ่ม prop สำหรับสลับไป Sidebar.tsx
+  onSwitchSidebar?: () => void;
 }
-
-interface SidebarUserData {
-  device_name: string;
-  username: string;
-  full_name: string;
-  role: string;
-}
-
-interface StoredUser {
-  username?: string;
-  full_name?: string;
-  role?: string;
-}
-
-interface StoredDevice {
-  device_name?: string;
-  pos_device?: {
-    device_name?: string;
-  };
-}
-
-const fallbackUserData: SidebarUserData = {
-  device_name: "-",
-  username: "-",
-  full_name: "ผู้ใช้งาน",
-  role: "-",
-};
-
-const getDeviceName = (value: unknown): string => {
-  if (!value || typeof value !== "object") {
-    return "-";
-  }
-
-  const device = value as StoredDevice;
-  return device.device_name || device.pos_device?.device_name || "-";
-};
-
-const getUserData = (value: unknown): Omit<SidebarUserData, "device_name"> => {
-  if (!value || typeof value !== "object") {
-    return {
-      username: "-",
-      full_name: "ผู้ใช้งาน",
-      role: "-",
-    };
-  }
-
-  const user = value as StoredUser;
-
-  return {
-    username: user.username || "-",
-    full_name: user.full_name || user.username || "ผู้ใช้งาน",
-    role: user.role || "-",
-  };
-};
 
 export default function SidebarProduct({
   isOpen,
@@ -81,61 +27,18 @@ export default function SidebarProduct({
   currentPage,
   onSwitchSidebar,
 }: SidebarProductProps) {
-  const [userData, setUserData] = useState<SidebarUserData>(fallbackUserData);
-
-  useEffect(() => {
-    let isMounted = true;
-
-    const loadSidebarData = async () => {
-      try {
-        const [storedUser, storedDevice] = await Promise.all([
-          window.electronStore.get("user"),
-          window.electronStore.get("pos_device"),
-        ]);
-
-        if (!isMounted) {
-          return;
-        }
-
-        const user = getUserData(storedUser);
-
-        setUserData({
-          ...user,
-          device_name: getDeviceName(storedDevice),
-        });
-      } catch (error) {
-        console.error("Error loading sidebar data:", error);
-      }
-    };
-
-    loadSidebarData();
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
-
   const menuItems = [
-    { id: "productList", label: "รายการสินค้า", icon: IconPackage },
-    { id: "categories", label: "หมวดหมู่", icon: IconCategory },
-    { id: "printBarcode", label: "พิมพ์บาร์โค้ด", icon: IconBarcode },
+    { id: "productList", label: "รายการสินค้า", icon: IconPackage, title: "รายการสินค้า" },
+    { id: "categories", label: "หมวดหมู่", icon: IconCategory, title: "หมวดหมู่สินค้า" },
+    { id: "printBarcode", label: "พิมพ์บาร์โค้ดสินค้า", icon: IconBarcode, title: "พิมพ์บาร์โค้ดสินค้า" },
+    { id: "priceQuotation", label: "ใบเสนอราคา", icon: IconFileInvoice, title: "ใบเสนอราคา" },
+    { id: "promotion", label: "โปรโมชั่น", icon: IconGift, title: "โปรโมชั่น" },
   ];
 
-  const handleLogout = async () => {
-    if (!window.confirm("คุณต้องการออกจากระบบใช่หรือไม่?")) {
-      return;
-    }
+  // หา title ของเมนูที่กำลัง active
+  const activeMenu = menuItems.find((item) => item.id === currentPage);
+  const currentTitle = activeMenu?.title || "";
 
-    try {
-      await logoutAndClearSession();
-    } catch (error) {
-      console.error("Error logging out:", error);
-    }
-
-    window.location.reload();
-  };
-
-  // ฟังก์ชันสำหรับจัดการการย้อนกลับ - สลับไป Sidebar.tsx
   const handleGoBack = () => {
     if (onSwitchSidebar) {
       onSwitchSidebar();
@@ -181,30 +84,16 @@ export default function SidebarProduct({
           </div>
         </div>
 
-        <div
-          className={`border-b border-white/20 px-4 py-4 ${
-            isOpen ? "block" : "flex justify-center"
-          }`}
-        >
-          {isOpen ? (
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-white/20">
-                  <IconUser size={16} className="text-white" />
-                </div>
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-white">
-                    {userData.full_name}
-                  </p>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white/20">
-              <IconUser size={18} className="text-white" />
-            </div>
-          )}
-        </div>
+        <AccountBar isOpen={isOpen} />
+
+        {/* แสดง Title ของเมนูที่ถูกเลือก */}
+        {isOpen && currentTitle && (
+          <div className="px-4 py-3 border-b border-white/10">
+            <h2 className="text-sm font-medium text-white/70 truncate">
+              {currentTitle}
+            </h2>
+          </div>
+        )}
 
         <nav className="flex-1 overflow-y-auto px-3 py-4">
           <ul className="space-y-1">
@@ -230,7 +119,6 @@ export default function SidebarProduct({
               );
             })}
 
-            {/* เส้นแบ่งก่อนปุ่มย้อนกลับ */}
             {isOpen ? (
               <li className="my-2 border-t border-white/20" />
             ) : (
@@ -239,7 +127,6 @@ export default function SidebarProduct({
               </li>
             )}
 
-            {/* ปุ่มย้อนกลับ - อยู่ใต้พิมพ์บาร์โค้ด */}
             <li>
               <button
                 type="button"
@@ -256,18 +143,7 @@ export default function SidebarProduct({
           </ul>
         </nav>
 
-        <div className="border-t border-white/20 px-3 py-4">
-          <button
-            type="button"
-            onClick={handleLogout}
-            className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-white/80 transition-all duration-200 hover:bg-red-500/30 hover:text-white ${
-              isOpen ? "justify-start" : "justify-center"
-            }`}
-          >
-            <IconLogout size={20} className="shrink-0" />
-            {isOpen ? <span>ออกจากระบบ</span> : null}
-          </button>
-        </div>
+        <Logoutbar isOpen={isOpen} />
       </aside>
     </>
   );

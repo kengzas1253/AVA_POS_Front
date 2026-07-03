@@ -16,6 +16,8 @@ export interface AuthTokens {
   refresh_expires_in?: number;
 }
 
+let refreshPromise: Promise<string> | null = null;
+
 const getApiBase = async (): Promise<string> => {
   const apiPath = await window.electronStore.get(API_PATH_KEY);
   if (!apiPath || typeof apiPath !== "string") {
@@ -81,7 +83,7 @@ export const clearAuthSession = async (): Promise<void> => {
   ]);
 };
 
-export const refreshAccessToken = async (): Promise<string> => {
+const requestNewAccessToken = async (): Promise<string> => {
   const refreshToken = await window.electronStore.get(REFRESH_TOKEN_KEY);
   if (!refreshToken || typeof refreshToken !== "string") {
     throw new Error("ไม่พบ Refresh Token");
@@ -105,7 +107,23 @@ export const refreshAccessToken = async (): Promise<string> => {
   }
 
   await saveAuthTokens(data, refreshToken);
-  return data.access_token || data.token || "";
+  const accessToken = data.access_token || data.token;
+
+  if (!accessToken) {
+    throw new Error("เซิร์ฟเวอร์ไม่ได้ส่ง Access Token กลับมา");
+  }
+
+  return accessToken;
+};
+
+export const refreshAccessToken = async (): Promise<string> => {
+  if (!refreshPromise) {
+    refreshPromise = requestNewAccessToken().finally(() => {
+      refreshPromise = null;
+    });
+  }
+
+  return refreshPromise;
 };
 
 export const ensureValidAccessToken = async (): Promise<boolean> => {

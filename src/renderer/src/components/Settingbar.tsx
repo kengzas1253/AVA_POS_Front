@@ -1,36 +1,47 @@
 import {
+  IconReceiptTax,
+  IconPrinter,
+  IconReceipt,
+  IconCreditCard,
+  IconArrowBackUp,
   IconChevronLeft,
   IconChevronRight,
   IconDeviceLaptop,
-  IconPackage,
-  IconReceipt,
-  IconSettings,
-  IconShoppingCart,
-  IconUsers,
+  IconUserPlus,
+  IconUserCircle,
+  IconBuildingStore,
 } from "@tabler/icons-react";
 import AccountBar from "./AccountBar";
 import Logoutbar from "./Logoutbar";
 
-interface SidebarProps {
+interface SettingbarProps {
   isOpen: boolean;
   onToggle: () => void;
   onNavigate: (page: string) => void;
   currentPage: string;
+  onSwitchSidebar?: () => void;
 }
 
-export default function Sidebar({
+export default function Settingbar({
   isOpen,
   onToggle,
   onNavigate,
   currentPage,
-}: SidebarProps) {
+  onSwitchSidebar,
+}: SettingbarProps) {
   const menuItems = [
-    { id: "pos", label: "หน้าร้านขาย", icon: IconShoppingCart },
-    { id: "receipts", label: "ใบเสร็จรับเงิน", icon: IconReceipt },
-    { id: "products", label: "รายการสินค้า", icon: IconPackage },
-    { id: "customers", label: "ลูกค้า", icon: IconUsers },
-    { id: "settings", label: "การตั้งค่า", icon: IconSettings },
+    { id: "storeInfo", label: "ข้อมูลร้านค้า", icon: IconBuildingStore },
+    { id: "userInfo", label: "ข้อมูลผู้ใช้งาน", icon: IconUserCircle },
+    { id: "employees", label: "พนักงาน", icon: IconUserPlus },
+    { id: "tax", label: "ภาษี", icon: IconReceiptTax },
+    { id: "printer", label: "ตั้งค่าเครื่องพิมพ์", icon: IconPrinter },
+    { id: "receipt", label: "ใบเสร็จรับเงิน", icon: IconReceipt },
+    { id: "payment", label: "ชำระเงิน", icon: IconCreditCard },
   ];
+
+  const handleGoBack = () => {
+    if (onSwitchSidebar) onSwitchSidebar();
+  };
 
   return (
     <>
@@ -78,12 +89,13 @@ export default function Sidebar({
             {menuItems.map((item) => {
               const Icon = item.icon;
               const isActive = currentPage === item.id;
-
               return (
                 <li key={item.id}>
                   <button
                     type="button"
                     onClick={() => onNavigate(item.id)}
+                    title={item.label}
+                    aria-label={item.label}
                     className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200 ${
                       isActive
                         ? "bg-white/25 text-white shadow-lg"
@@ -96,6 +108,28 @@ export default function Sidebar({
                 </li>
               );
             })}
+
+            {isOpen ? (
+              <li className="my-2 border-t border-white/20" />
+            ) : (
+              <li className="my-2 flex justify-center">
+                <div className="h-px w-8 bg-white/20" />
+              </li>
+            )}
+
+            <li>
+              <button
+                type="button"
+                onClick={handleGoBack}
+                className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200 text-white/80 hover:bg-white/15 hover:text-white ${
+                  isOpen ? "justify-start" : "justify-center"
+                }`}
+                title="ย้อนกลับไปหน้าแรก"
+              >
+                <IconArrowBackUp size={20} className="shrink-0" />
+                {isOpen ? <span className="truncate">ย้อนกลับ</span> : null}
+              </button>
+            </li>
           </ul>
         </nav>
 
