@@ -24,9 +24,10 @@ export interface FavoriteProduct {
   id: number | string;
   product_name: string;
   sale_price: number;
-  price_mode?: "FIXED_PRICE" | "WEIGHT_PRICE" | "OPEN_PRICE";
+  price_mode?: "FIXED_PRICE" | "WEIGHT_PRICE" | "OPEN_PRICE" | "SERVICE_PRICE";
   unit_code?: string;
   stock_qty?: number;
+  allow_discount?: boolean;
   image_url?: string | null;
   sku?: string;
   barcode?: string;
@@ -136,6 +137,11 @@ const unwrapList = <T,>(payload: ListResponse<T>): T[] =>
 
 const getItemGroupId = (item: FavoriteItem) =>
   item.favorite_group_id ?? item.group_id ?? item.favorite_group?.id;
+
+const getProductPriceLabel = (product: FavoriteProduct): string =>
+  product.price_mode === "SERVICE_PRICE"
+    ? "กรอกราคาตอนขาย"
+    : `฿${Number(product.sale_price || 0).toFixed(2)}`;
 
 interface AllProductsProps {
   searchQuery: string;
@@ -327,7 +333,7 @@ export function AllProducts({
                   {product.product_name}
                 </p>
                 <p className="mt-2 text-lg font-bold text-[#1d6fd8]">
-                  ฿{Number(product.sale_price || 0).toFixed(2)}
+                  {getProductPriceLabel(product)}
                 </p>
                 <span className="mt-2 flex items-center gap-1 text-xs text-slate-400">
                   <IconShoppingCartPlus size={14} />
@@ -689,7 +695,7 @@ export default function FavoriteItems({
                     {product.product_name}
                   </p>
                   <p className="mt-2 text-lg font-bold text-[#1d6fd8]">
-                    ฿{Number(product.sale_price || 0).toFixed(2)}
+                    {getProductPriceLabel(product)}
                   </p>
                   <span className="mt-2 flex items-center gap-1 text-xs text-slate-400">
                     <IconShoppingCartPlus size={14} />
@@ -771,7 +777,7 @@ export default function FavoriteItems({
                         {product.product_name}
                       </p>
                       <p className="mt-1 text-xs text-slate-500">
-                        ฿{Number(product.sale_price || 0).toFixed(2)}
+                        {getProductPriceLabel(product)}
                       </p>
                     </button>
                   ))}

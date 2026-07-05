@@ -1,16 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   IconCreditCard,
+  IconDiscount,
   IconKeyboard,
   IconMenu2,
   IconMinus,
   IconPencil,
+  IconPhone,
   IconPlus,
   IconQrcode,
+  IconRefresh,
   IconSearch,
   IconShoppingCart,
   IconStar,
   IconTrash,
+  IconUser,
+  IconUserPlus,
   IconX,
 } from "@tabler/icons-react";
 import Sidebar from "./Sidebar";
@@ -34,6 +39,7 @@ import {
 } from "./FavoriteItems";
 import { UserInfoPage } from "./UserInfoPage";
 import { ensureValidAccessToken, refreshAccessToken } from "./auth";
+import { normalizeBarcode } from "./BarcodeNormalizer";
 
 interface CartItem {
   id?: number | string;
@@ -41,17 +47,20 @@ interface CartItem {
   price: number;
   qty: number;
   unit?: string;
+  allow_discount?: boolean;
+  discount: number;
 }
 
 interface ScannedProduct {
   id: number | string;
   barcode?: string;
   name: string;
-  product_type: "FIXED_PRICE" | "WEIGHT" | "OPEN_PRICE";
+  product_type: "FIXED_PRICE" | "WEIGHT" | "OPEN_PRICE" | "SERVICE_PRICE";
   sale_price?: number;
   stock_qty?: number;
   unit?: string;
   price_per_unit?: number;
+  allow_discount?: boolean;
 }
 
 interface SearchedProduct {
@@ -60,10 +69,11 @@ interface SearchedProduct {
   sku?: string | null;
   name: string;
   product_type: string;
-  price_mode: "FIXED_PRICE" | "WEIGHT_PRICE" | "OPEN_PRICE";
+  price_mode: "FIXED_PRICE" | "WEIGHT_PRICE" | "OPEN_PRICE" | "SERVICE_PRICE";
   price: number;
   track_stock?: boolean;
   stock_qty?: number;
+  allow_discount?: boolean;
   image_url?: string | null;
   unit?: string | null;
 }
@@ -89,6 +99,40 @@ interface ScanProductResponse {
   product?: ScannedProduct;
 }
 
+interface StoreSettings {
+  vat_enabled?: boolean;
+  vat_rate?: number;
+}
+
+interface StoreSettingsResponse {
+  status?: string;
+  message?: string;
+  data?: {
+    store?: StoreSettings;
+  };
+}
+
+interface PosCustomer {
+  id: number | string;
+  customer_code?: string;
+  customer_name?: string;
+  name?: string;
+  full_name?: string;
+  phone?: string | null;
+  phone_number?: string | null;
+  mobile?: string | null;
+  email?: string | null;
+  address?: string | null;
+  points_balance?: number;
+  total_purchase_amount?: number;
+}
+
+interface CustomersResponse {
+  data?: PosCustomer[] | { customers?: PosCustomer[]; data?: PosCustomer[] };
+  customers?: PosCustomer[];
+  message?: string;
+}
+
 interface PendingScanInput {
   type: "WEIGHT" | "PRICE";
   product: ScannedProduct;
@@ -97,8 +141,8 @@ interface PendingScanInput {
 const formatBaht = (value: number): string => `฿${value.toFixed(2)}`;
 
 // กำหนดเวลาในการรอรับบาร์โค้ดจากเครื่องสแกน (หน่วย: มิลลิวินาที)
-const BARCODE_INPUT_TIMEOUT_MS = 5000;
-// const BARCODE_INPUT_TIMEOUT_MS = 300;
+//const BARCODE_INPUT_TIMEOUT_MS = 5000;
+const BARCODE_INPUT_TIMEOUT_MS = 300;
 
 const getStoredMachineId = (storedDevice: unknown): string | null => {
   if (!storedDevice || typeof storedDevice !== "object") {
@@ -209,6 +253,106 @@ const searchProducts = async (
   return data;
 };
 
+const loadStoreSettings = async (): Promise<StoreSettings> => {
+  const apiPath = await window.electronStore.get("apiPath");
+  if (typeof apiPath !== "string" || !apiPath.trim()) {
+    throw new Error("ไม่พบ API endpoint ใน store");
+  }
+  if (!(await ensureValidAccessToken())) {
+    throw new Error("ไม่สามารถยืนยันตัวตนได้ กรุณาเข้าสู่ระบบใหม่");
+  }
+
+  let accessToken = await window.electronStore.get("access_token");
+  if (typeof accessToken !== "string" || !accessToken.trim()) {
+    throw new Error("ไม่พบ access token");
+  }
+
+  const baseUrl = apiPath.trim().replace(/\/+$/, "");
+  const request = (token: string) =>
+    fetch(`${baseUrl}/store/settings`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+  let response = await request(accessToken);
+  if (response.status === 401) {
+    accessToken = await refreshAccessToken();
+    response = await request(accessToken);
+  }
+
+  const data = (await response.json().catch(() => ({}))) as StoreSettingsResponse;
+  if (!response.ok) {
+    throw new Error(data.message || `โหลดการตั้งค่าร้านไม่สำเร็จ (${response.status})`);
+  }
+
+  return data.data?.store ?? {};
+};
+
+const loadCustomers = async (): Promise<PosCustomer[]> => {
+  const apiPath = await window.electronStore.get("apiPath");
+  if (typeof apiPath !== "string" || !apiPath.trim()) {
+    throw new Error("ไม่พบ API endpoint ใน store");
+  }
+  if (!(await ensureValidAccessToken())) {
+    throw new Error("ไม่สามารถยืนยันตัวตนได้ กรุณาเข้าสู่ระบบใหม่");
+  }
+
+  let accessToken = await window.electronStore.get("access_token");
+  if (typeof accessToken !== "string" || !accessToken.trim()) {
+    throw new Error("ไม่พบ access token");
+  }
+
+  const baseUrl = apiPath.trim().replace(/\/+$/, "");
+  const request = (token: string) =>
+    fetch(`${baseUrl}/customers`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+  let response = await request(accessToken);
+  if (response.status === 401) {
+    accessToken = await refreshAccessToken();
+    response = await request(accessToken);
+  }
+
+  const data = (await response.json().catch(() => ({}))) as
+    | PosCustomer[]
+    | CustomersResponse;
+  if (!response.ok) {
+    const message =
+      !Array.isArray(data) && typeof data === "object" && "message" in data
+        ? String(data.message)
+        : "";
+    throw new Error(message || `โหลดข้อมูลลูกค้าไม่สำเร็จ (${response.status})`);
+  }
+
+  if (Array.isArray(data)) {
+    return data;
+  }
+
+  if (Array.isArray(data.data)) {
+    return data.data;
+  }
+
+  if (Array.isArray(data.customers)) {
+    return data.customers;
+  }
+
+  if (data.data && !Array.isArray(data.data)) {
+    if (Array.isArray(data.data.customers)) {
+      return data.data.customers;
+    }
+
+    if (Array.isArray(data.data.data)) {
+      return data.data.data;
+    }
+  }
+
+  return [];
+};
+
 const unwrapSearchedProducts = (
   payload: SearchProductResponse["data"],
 ): SearchedProduct[] => {
@@ -235,6 +379,12 @@ const unwrapSearchedProducts = (
   return [];
 };
 
+const getCustomerName = (customer: PosCustomer): string =>
+  customer.customer_name ?? customer.name ?? customer.full_name ?? "-";
+
+const getCustomerPhone = (customer: PosCustomer): string =>
+  customer.phone ?? customer.phone_number ?? customer.mobile ?? "-";
+
 export default function PosLandingPages() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [currentPage, setCurrentPage] = useState("pos");
@@ -260,16 +410,44 @@ export default function PosLandingPages() {
   const [pendingScanInput, setPendingScanInput] =
     useState<PendingScanInput | null>(null);
   const [scanInputValue, setScanInputValue] = useState("");
+  const [storeSettings, setStoreSettings] = useState<StoreSettings>({
+    vat_enabled: false,
+    vat_rate: 0,
+  });
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [selectedCartItemName, setSelectedCartItemName] = useState<string | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearConfirmSelection, setClearConfirmSelection] = useState<
     "cancel" | "confirm"
   >("confirm");
+  const [discountPopupItemName, setDiscountPopupItemName] = useState<
+    string | null
+  >(null);
+  const [discountInputValue, setDiscountInputValue] = useState("");
+  const [selectedCustomer, setSelectedCustomer] = useState<PosCustomer | null>(
+    null,
+  );
+  const [showCustomerPopup, setShowCustomerPopup] = useState(false);
+  const [customers, setCustomers] = useState<PosCustomer[]>([]);
+  const [isLoadingCustomers, setIsLoadingCustomers] = useState(false);
+  const [customerLoadError, setCustomerLoadError] = useState<string | null>(
+    null,
+  );
+  const [customerSearchQuery, setCustomerSearchQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const customerSearchRef = useRef<HTMLInputElement>(null);
   const scanInputRef = useRef<HTMLInputElement>(null);
+  const discountInputRef = useRef<HTMLInputElement>(null);
   const barcodeBufferRef = useRef("");
   const barcodeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isScanningRef = useRef(false);
+  const pendingBarcodeScanQueueRef = useRef<string[]>([]);
+  const scanInputFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const clearConfirmFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const clearConfirmSelectionRef = useRef<"cancel" | "confirm">("confirm");
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
   const cancelButtonRef = useRef<HTMLButtonElement>(null);
@@ -294,14 +472,58 @@ export default function PosLandingPages() {
     () => cart.reduce((sum, item) => sum + item.price * item.qty, 0),
     [cart]
   );
-  const tax = subTotal * 0.07;
-  const total = subTotal + tax;
+  const itemCount = cart.length;
+  const totalQty = cart.reduce((sum, item) => sum + item.qty, 0);
+  const discountAmount = cart.reduce((sum, item) => {
+    if (!item.allow_discount) {
+      return sum;
+    }
+    const lineTotal = item.price * item.qty;
+    return sum + Math.min(Math.max(item.discount || 0, 0), lineTotal);
+  }, 0);
+  const netTotal = Math.max(subTotal - discountAmount, 0);
+  const discountPopupItem = discountPopupItemName
+    ? cart.find((item) => item.name === discountPopupItemName) ?? null
+    : null;
+  const vatRate = Number(storeSettings.vat_rate) || 0;
+  const isVatEnabled = Boolean(storeSettings.vat_enabled) && vatRate > 0;
+  const tax = isVatEnabled ? netTotal * (vatRate / 100) : 0;
+  const total = netTotal + tax;
+  const filteredCustomers = useMemo(() => {
+    const keyword = customerSearchQuery.trim().toLowerCase();
+
+    if (!keyword) {
+      return customers;
+    }
+
+    return customers.filter((customer) =>
+      [
+        getCustomerName(customer),
+        customer.customer_code ?? "",
+        getCustomerPhone(customer),
+        customer.email ?? "",
+        customer.address ?? "",
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(keyword),
+    );
+  }, [customerSearchQuery, customers]);
 
   const changeQty = (name: string, delta: number) => {
     const changedIndex = cart.findIndex((item) => item.name === name);
     const nextItems = cart
       .map((item) =>
-        item.name === name ? { ...item, qty: item.qty + delta } : item,
+        item.name === name
+          ? {
+              ...item,
+              qty: item.qty + delta,
+              discount: Math.min(
+                item.discount || 0,
+                item.price * Math.max(item.qty + delta, 0),
+              ),
+            }
+          : item,
       )
       .filter((item) => item.qty > 0);
 
@@ -359,7 +581,21 @@ export default function PosLandingPages() {
   const clearCart = () => {
     setCart([]);
     setSelectedCartItemName(null);
+    setSelectedCustomer(null);
     setShowClearConfirm(false);
+  };
+
+  const openPriceInput = (product: ScannedProduct) => {
+    const price = Number(product.sale_price ?? product.price_per_unit) || 0;
+    setScanInputValue(price > 0 ? String(price) : "");
+    setScanMessage(null);
+    setPendingScanInput({ type: "PRICE", product });
+  };
+
+  const closeScanInput = () => {
+    setPendingScanInput(null);
+    setScanInputValue("");
+    setScanMessage(null);
   };
 
   const addFavoriteProduct = (product: FavoriteProduct) => {
@@ -372,16 +608,15 @@ export default function PosLandingPages() {
         priceMode === "WEIGHT_PRICE" ? "WEIGHT" : priceMode,
       sale_price: Number(product.sale_price) || 0,
       stock_qty: product.stock_qty,
+      allow_discount: product.allow_discount,
       unit:
         product.unit_code ||
         (priceMode === "WEIGHT_PRICE" ? "กก." : undefined),
       price_per_unit: Number(product.sale_price) || 0,
     };
 
-    if (priceMode === "OPEN_PRICE") {
-      setScanInputValue("");
-      setScanMessage(null);
-      setPendingScanInput({ type: "PRICE", product: cartProduct });
+    if (priceMode === "OPEN_PRICE" || priceMode === "SERVICE_PRICE") {
+      openPriceInput(cartProduct);
       return;
     }
 
@@ -404,7 +639,7 @@ export default function PosLandingPages() {
     setCart((items) => {
       const found = items.find(
         (item) =>
-          item.id === product.id &&
+          String(item.id) === String(product.id) &&
           item.price === price &&
           item.unit === product.unit,
       );
@@ -423,9 +658,96 @@ export default function PosLandingPages() {
           price,
           qty,
           unit: product.unit,
+          allow_discount: product.allow_discount ?? true,
+          discount: 0,
         },
       ];
     });
+  };
+
+  const changeItemDiscount = (name: string, discount: number) => {
+    setCart((items) =>
+      items.map((item) => {
+        if (item.name !== name || !item.allow_discount) {
+          return item;
+        }
+
+        const lineTotal = item.price * item.qty;
+        return {
+          ...item,
+          discount: Math.min(Math.max(discount, 0), lineTotal),
+        };
+      }),
+    );
+  };
+
+  const openDiscountPopup = (name: string) => {
+    const item = cart.find((cartItem) => cartItem.name === name);
+    if (!item || !item.allow_discount) {
+      return;
+    }
+
+    setSelectedCartItemName(name);
+    setDiscountPopupItemName(name);
+    setDiscountInputValue(item.discount ? String(item.discount) : "");
+  };
+
+  const closeDiscountPopup = () => {
+    setDiscountPopupItemName(null);
+    setDiscountInputValue("");
+  };
+
+  const confirmDiscountPopup = () => {
+    if (!discountPopupItemName) {
+      return;
+    }
+
+    changeItemDiscount(discountPopupItemName, Number(discountInputValue) || 0);
+    closeDiscountPopup();
+  };
+
+  const fetchCustomerList = async () => {
+    setIsLoadingCustomers(true);
+    setCustomerLoadError(null);
+
+    try {
+      setCustomers(await loadCustomers());
+    } catch (error) {
+      setCustomerLoadError(
+        error instanceof Error
+          ? error.message
+          : "ไม่สามารถโหลดข้อมูลลูกค้าได้",
+      );
+    } finally {
+      setIsLoadingCustomers(false);
+    }
+  };
+
+  const openCustomerPopup = () => {
+    setCustomerSearchQuery("");
+    setShowCustomerPopup(true);
+    void fetchCustomerList();
+  };
+
+  const closeCustomerPopup = () => {
+    setShowCustomerPopup(false);
+    setCustomerLoadError(null);
+  };
+
+  const selectCustomer = (customer: PosCustomer) => {
+    setSelectedCustomer(customer);
+    closeCustomerPopup();
+  };
+
+  const confirmQuitApp = () => {
+    if (currentPage !== "pos") {
+      return;
+    }
+
+    const shouldQuit = window.confirm("คุณต้องการปิดโปรแกรมหรือไม่?");
+    if (shouldQuit) {
+      void window.electronAPI.quitApp();
+    }
   };
 
   const selectSearchedProduct = (product: SearchedProduct) => {
@@ -439,6 +761,7 @@ export default function PosLandingPages() {
           : product.price_mode,
       sale_price: Number(product.price) || 0,
       stock_qty: product.stock_qty,
+      allow_discount: product.allow_discount,
       unit: product.unit || (product.price_mode === "WEIGHT_PRICE" ? "กก." : undefined),
       price_per_unit: Number(product.price) || 0,
     };
@@ -446,9 +769,8 @@ export default function PosLandingPages() {
     setSearchResults([]);
     setSearchMessage(null);
 
-    if (product.price_mode === "OPEN_PRICE") {
-      setScanInputValue("");
-      setPendingScanInput({ type: "PRICE", product: cartProduct });
+    if (product.price_mode === "OPEN_PRICE" || product.price_mode === "SERVICE_PRICE") {
+      openPriceInput(cartProduct);
       return;
     }
 
@@ -505,12 +827,22 @@ export default function PosLandingPages() {
     }
   };
 
-  const handleBarcodeScan = async (barcode: string) => {
-    const normalizedBarcode = barcode.trim();
-    if (!normalizedBarcode || isScanning) {
+  // ประมวลผลบาร์โค้ดที่ "normalize แล้ว" เท่านั้น ห้ามเรียก normalizeBarcode ซ้ำที่นี่
+  // (ของเดิม bug อยู่ตรงที่คิวเก็บค่าที่ normalize แล้ว แต่ดันเอาไปวนเข้า
+  // handleBarcodeScan ใหม่ ทำให้ normalizeBarcode ถูกเรียกซ้ำสองครั้งกับบาร์โค้ด
+  // เดียวกัน ถ้าเกิดมีอักขระอย่าง "-", "/", "." ปนอยู่ในบาร์โค้ดจริง มันจะถูก
+  // แปลงเป็นตัวเลขผิดๆ ซ้ำอีกรอบ ทำให้ยิงบาร์โค้ดซ้ำแล้วหาไม่เจอ)
+  const processNormalizedBarcode = async (normalizedBarcode: string) => {
+    if (!normalizedBarcode) {
       return;
     }
 
+    if (isScanningRef.current) {
+      pendingBarcodeScanQueueRef.current.push(normalizedBarcode);
+      return;
+    }
+
+    isScanningRef.current = true;
     setIsScanning(true);
     setScanMessage(null);
 
@@ -538,10 +870,10 @@ export default function PosLandingPages() {
 
       if (
         result.code === "PRICE_REQUIRED" ||
-        result.product.product_type === "OPEN_PRICE"
+        result.product.product_type === "OPEN_PRICE" ||
+        result.product.product_type === "SERVICE_PRICE"
       ) {
-        setScanInputValue("");
-        setPendingScanInput({ type: "PRICE", product: result.product });
+        openPriceInput(result.product);
         return;
       }
 
@@ -554,8 +886,21 @@ export default function PosLandingPages() {
         error instanceof Error ? error.message : "ไม่สามารถสแกนสินค้าได้",
       );
     } finally {
+      isScanningRef.current = false;
       setIsScanning(false);
+
+      const pendingBarcode = pendingBarcodeScanQueueRef.current.shift();
+      if (pendingBarcode) {
+        // pendingBarcode ถูก normalize มาแล้วตั้งแต่ตอน push เข้าคิว
+        // จึงเรียก processNormalizedBarcode ตรงๆ ห้ามวนกลับไป normalize ซ้ำ
+        void processNormalizedBarcode(pendingBarcode);
+      }
     }
+  };
+
+  const handleBarcodeScan = async (barcode: string) => {
+    const normalizedBarcode = normalizeBarcode(barcode);
+    await processNormalizedBarcode(normalizedBarcode);
   };
 
   const confirmScanInput = () => {
@@ -590,7 +935,6 @@ export default function PosLandingPages() {
     setSearchQuery("");
     setSearchResults([]);
     setSearchMessage(null);
-    requestAnimationFrame(() => searchRef.current?.focus());
   };
 
   const processPayment = () => {
@@ -604,10 +948,105 @@ export default function PosLandingPages() {
 
   // จัดการคีย์บอร์ดสำหรับ Popup ยืนยันการลบ
   useEffect(() => {
-    if (pendingScanInput) {
-      setTimeout(() => scanInputRef.current?.focus(), 50);
+    if (scanInputFocusTimerRef.current) {
+      clearTimeout(scanInputFocusTimerRef.current);
+      scanInputFocusTimerRef.current = null;
     }
+
+    if (pendingScanInput) {
+      scanInputFocusTimerRef.current = setTimeout(() => {
+        scanInputRef.current?.focus();
+        scanInputFocusTimerRef.current = null;
+      }, 50);
+    }
+
+    return () => {
+      if (scanInputFocusTimerRef.current) {
+        clearTimeout(scanInputFocusTimerRef.current);
+        scanInputFocusTimerRef.current = null;
+      }
+    };
   }, [pendingScanInput]);
+
+  // โฟกัสช่องกรอกส่วนลดเมื่อ popup ส่วนลดเปิดขึ้น
+  useEffect(() => {
+    if (!discountPopupItemName) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      discountInputRef.current?.focus();
+      discountInputRef.current?.select();
+    }, 50);
+
+    return () => clearTimeout(timer);
+  }, [discountPopupItemName]);
+
+  useEffect(() => {
+    if (!showCustomerPopup) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      customerSearchRef.current?.focus();
+      customerSearchRef.current?.select();
+    }, 50);
+
+    return () => clearTimeout(timer);
+  }, [showCustomerPopup]);
+
+  // ปิด popup ส่วนลดอัตโนมัติถ้ารายการสินค้านั้นถูกลบออกจากตะกร้าแล้ว
+  useEffect(() => {
+    if (
+      discountPopupItemName &&
+      !cart.some((item) => item.name === discountPopupItemName)
+    ) {
+      setDiscountPopupItemName(null);
+      setDiscountInputValue("");
+    }
+  }, [cart, discountPopupItemName]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const fetchStoreSettings = async () => {
+      try {
+        const settings = await loadStoreSettings();
+        if (!isCancelled) {
+          setStoreSettings({
+            vat_enabled: Boolean(settings.vat_enabled),
+            vat_rate: Number(settings.vat_rate) || 0,
+          });
+        }
+      } catch (err) {
+        console.error("Error loading store settings:", err);
+        if (!isCancelled) {
+          setStoreSettings({ vat_enabled: false, vat_rate: 0 });
+        }
+      }
+    };
+
+    if (currentPage === "pos") {
+      void fetchStoreSettings();
+    }
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentPage]);
+
+  useEffect(() => {
+    if (currentPage === "pos") {
+      return;
+    }
+
+    closeScanInput();
+    setShowShortcuts(false);
+    setShowClearConfirm(false);
+    setShowCustomerPopup(false);
+    setSearchResults([]);
+    setSearchMessage(null);
+  }, [currentPage]);
 
   useEffect(() => {
     const handleScannerKeyboard = (event: KeyboardEvent) => {
@@ -623,6 +1062,7 @@ export default function PosLandingPages() {
         isTyping ||
         showClearConfirm ||
         showShortcuts ||
+        showCustomerPopup ||
         pendingScanInput
       ) {
         return;
@@ -631,6 +1071,7 @@ export default function PosLandingPages() {
       if (event.key === "Enter") {
         if (barcodeBufferRef.current) {
           event.preventDefault();
+          event.stopImmediatePropagation();
           const barcode = barcodeBufferRef.current;
           barcodeBufferRef.current = "";
           setBarcodeBuffer("");
@@ -644,6 +1085,7 @@ export default function PosLandingPages() {
 
       if (event.key === "Backspace" && barcodeBufferRef.current) {
         event.preventDefault();
+        event.stopImmediatePropagation();
         barcodeBufferRef.current = barcodeBufferRef.current.slice(0, -1);
         setBarcodeBuffer(barcodeBufferRef.current);
         return;
@@ -651,6 +1093,7 @@ export default function PosLandingPages() {
 
       if (event.key === "Escape" && barcodeBufferRef.current) {
         event.preventDefault();
+        event.stopImmediatePropagation();
         barcodeBufferRef.current = "";
         setBarcodeBuffer("");
         if (barcodeTimerRef.current) {
@@ -668,6 +1111,15 @@ export default function PosLandingPages() {
         return;
       }
 
+      if (
+        !barcodeBufferRef.current &&
+        ["+", "=", "-", "_"].includes(event.key)
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
       barcodeBufferRef.current += event.key;
       setBarcodeBuffer(barcodeBufferRef.current);
 
@@ -689,10 +1141,10 @@ export default function PosLandingPages() {
     };
   }, [
     currentPage,
-    isScanning,
     pendingScanInput,
     showClearConfirm,
     showShortcuts,
+    showCustomerPopup,
   ]);
 
   useEffect(() => {
@@ -758,11 +1210,16 @@ export default function PosLandingPages() {
     window.addEventListener("keydown", handlePopupKeyboard, true);
 
     // Auto-focus ที่ปุ่มยืนยันเมื่อ Popup เปิด
-    setTimeout(() => {
+    clearConfirmFocusTimerRef.current = setTimeout(() => {
       confirmButtonRef.current?.focus();
+      clearConfirmFocusTimerRef.current = null;
     }, 50);
 
     return () => {
+      if (clearConfirmFocusTimerRef.current) {
+        clearTimeout(clearConfirmFocusTimerRef.current);
+        clearConfirmFocusTimerRef.current = null;
+      }
       window.removeEventListener("keydown", handlePopupKeyboard, true);
     };
   }, [showClearConfirm]);
@@ -774,10 +1231,41 @@ export default function PosLandingPages() {
       const isTyping =
         target instanceof HTMLInputElement ||
         target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement;
+        target instanceof HTMLSelectElement ||
+        target?.isContentEditable;
 
       // ถ้า Popup ยืนยันการลบเปิดอยู่ ให้ข้ามการทำงานทั้งหมด
       if (showClearConfirm) {
+        return;
+      }
+
+      if (event.key === "Escape" && showCustomerPopup) {
+        event.preventDefault();
+        closeCustomerPopup();
+        return;
+      }
+
+      if (event.key === "Escape" && pendingScanInput) {
+        event.preventDefault();
+        closeScanInput();
+        return;
+      }
+
+      if (event.key === "Escape" && discountPopupItemName) {
+        event.preventDefault();
+        closeDiscountPopup();
+        return;
+      }
+
+      if (event.key === "Escape" && showShortcuts) {
+        event.preventDefault();
+        setShowShortcuts(false);
+        return;
+      }
+
+      if (event.key === "Escape" && currentPage === "pos") {
+        event.preventDefault();
+        confirmQuitApp();
         return;
       }
 
@@ -787,9 +1275,9 @@ export default function PosLandingPages() {
         return;
       }
 
-      if (event.key === "Escape" && showShortcuts) {
+      if (event.key === "F3" && currentPage === "pos") {
         event.preventDefault();
-        setShowShortcuts(false);
+        openCustomerPopup();
         return;
       }
 
@@ -819,6 +1307,14 @@ export default function PosLandingPages() {
         return;
       }
 
+      if (event.key === "F8") {
+        event.preventDefault();
+        if (selectedCartItemName) {
+          openDiscountPopup(selectedCartItemName);
+        }
+        return;
+      }
+
       if (event.key === "+" || event.key === "=") {
         event.preventDefault();
         if (selectedCartItemName) {
@@ -840,7 +1336,17 @@ export default function PosLandingPages() {
     return () => {
       window.removeEventListener("keydown", handleKeyboardShortcut);
     };
-  }, [cart, selectedCartItemName, showShortcuts, showClearConfirm, total]);
+  }, [
+    cart,
+    currentPage,
+    pendingScanInput,
+    discountPopupItemName,
+    showCustomerPopup,
+    selectedCartItemName,
+    showShortcuts,
+    showClearConfirm,
+    total,
+  ]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-slate-50 font-sans antialiased">
@@ -1010,8 +1516,8 @@ export default function PosLandingPages() {
                           </div>
                           <div className="shrink-0 text-right">
                             <p className="text-sm font-bold text-[#1d6fd8]">
-                              {product.price_mode === "OPEN_PRICE"
-                                ? "ระบุราคา"
+                              {product.price_mode === "SERVICE_PRICE"
+                                ? "กรอกราคาตอนขาย"
                                 : formatBaht(Number(product.price) || 0)}
                             </p>
                             {product.price_mode === "WEIGHT_PRICE" ? (
@@ -1167,26 +1673,66 @@ export default function PosLandingPages() {
 
             <aside className="flex min-h-0 flex-col rounded-xl border border-slate-200 bg-white">
               <div className="flex h-14 items-center justify-between gap-2 border-b border-slate-100 px-4">
-                <div className="flex items-center gap-2">
+                <div className="flex min-w-0 items-center gap-2">
                   <IconShoppingCart size={20} className="text-[#1d6fd8]" />
-                  <h2 className="font-bold text-slate-900">ตะกร้าสินค้า</h2>
+                  <div className="min-w-0">
+                    <h2 className="font-bold text-slate-900">ตะกร้าสินค้า</h2>
+                    {selectedCustomer ? (
+                      <p className="truncate text-xs font-medium text-[#1d6fd8]">
+                        {getCustomerName(selectedCustomer)}
+                      </p>
+                    ) : null}
+                  </div>
                 </div>
-                {cart.length > 0 && (
+                <div className="flex shrink-0 items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setShowClearConfirm(true)}
-                    className="flex items-center gap-1 text-sm text-red-500 hover:text-red-700"
+                    onClick={openCustomerPopup}
+                    title="เลือกลูกค้า (F3)"
+                    aria-label="เลือกลูกค้า"
+                    className={`flex h-8 w-8 items-center justify-center rounded-lg border transition ${
+                      selectedCustomer
+                        ? "border-[#1d6fd8] bg-blue-50 text-[#1d6fd8] hover:bg-blue-100"
+                        : "border-slate-200 text-slate-500 hover:border-[#1d6fd8] hover:text-[#1d6fd8]"
+                    }`}
                   >
-                    <IconTrash size={16} />
-                    ลบทั้งหมด
+                    <IconUserPlus size={18} />
                   </button>
-                )}
+                  {selectedCustomer ? (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedCustomer(null)}
+                      title="ล้างลูกค้า"
+                      aria-label="ล้างลูกค้า"
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                    >
+                      <IconX size={16} />
+                    </button>
+                  ) : null}
+                  {cart.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowClearConfirm(true)}
+                      className="flex items-center gap-1 text-sm text-red-500 hover:text-red-700"
+                    >
+                      <IconTrash size={16} />
+                      ลบทั้งหมด
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="min-h-0 flex-1 overflow-y-auto p-4">
                 {cart.length ? (
                   <div className="space-y-3">
-                    {cart.map((item) => (
+                    {cart.map((item) => {
+                      const lineTotal = item.price * item.qty;
+                      const lineDiscount = item.allow_discount
+                        ? Math.min(Math.max(item.discount || 0, 0), lineTotal)
+                        : 0;
+                      const lineNetTotal = Math.max(lineTotal - lineDiscount, 0);
+
+                      return (
                       <div
                         key={`${item.id ?? item.name}-${item.price}-${item.unit ?? ""}`}
                         onClick={() => setSelectedCartItemName(item.name)}
@@ -1202,17 +1748,41 @@ export default function PosLandingPages() {
                             <p className="text-xs text-slate-500">
                               {formatBaht(item.price)} x {item.qty}
                             </p>
+                            {lineDiscount > 0 ? (
+                              <p className="text-xs text-slate-400">
+                                ราคาก่อนลด {formatBaht(lineTotal)}
+                              </p>
+                            ) : null}
                           </div>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              removeItem(item.name);
-                            }}
-                            className="text-slate-400 hover:text-red-500"
-                          >
-                            <IconTrash size={16} />
-                          </button>
+                          <div className="flex items-center gap-2">
+                            {item.allow_discount ? (
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openDiscountPopup(item.name);
+                                }}
+                                title="ใส่ส่วนลดรายการนี้"
+                                className={`transition ${
+                                  lineDiscount > 0
+                                    ? "text-[#1d6fd8] hover:text-[#1557ad]"
+                                    : "text-slate-400 hover:text-[#1d6fd8]"
+                                }`}
+                              >
+                                <IconDiscount size={18} />
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                removeItem(item.name);
+                              }}
+                              className="text-slate-400 hover:text-red-500"
+                            >
+                              <IconTrash size={16} />
+                            </button>
+                          </div>
                         </div>
                         <div className="mt-3 flex items-center justify-between">
                           <div className="flex items-center gap-2">
@@ -1241,11 +1811,39 @@ export default function PosLandingPages() {
                             </button>
                           </div>
                           <p className="font-bold text-slate-900">
-                            {formatBaht(item.price * item.qty)}
+                            {formatBaht(lineNetTotal)}
                           </p>
                         </div>
+                        {item.allow_discount && lineDiscount > 0 ? (
+                          <div className="mt-3">
+                            <label className="block text-xs text-slate-500">
+                              <span className="mb-1 block">
+                                ส่วนลดรายการนี้ (บาท)
+                              </span>
+                              <input
+                                type="number"
+                                min="0"
+                                max={item.price * item.qty}
+                                step="0.01"
+                                inputMode="decimal"
+                                value={item.discount || ""}
+                                onClick={(event) => event.stopPropagation()}
+                                onChange={(event) => {
+                                  setSelectedCartItemName(item.name);
+                                  changeItemDiscount(
+                                    item.name,
+                                    Number(event.target.value) || 0,
+                                  );
+                                }}
+                                placeholder="0.00"
+                                className="h-9 w-full rounded-lg border border-[#1d6fd8] px-3 text-right text-sm font-semibold text-slate-800 outline-none transition focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+                              />
+                            </label>
+                          </div>
+                        ) : null}
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="grid h-full place-items-center text-center text-slate-400">
@@ -1259,14 +1857,42 @@ export default function PosLandingPages() {
 
               <div className="border-t border-slate-100 p-4">
                 <div className="space-y-2 text-sm">
+                  {isVatEnabled ? (
+                    <>
+                      <div className="flex justify-between text-slate-500">
+                        <span>ยอดก่อนภาษี</span>
+                        <span>{formatBaht(subTotal)}</span>
+                      </div>
+                      {discountAmount > 0 ? (
+                        <div className="flex justify-between text-emerald-600">
+                          <span>ส่วนลด</span>
+                          <span>-{formatBaht(discountAmount)}</span>
+                        </div>
+                      ) : null}
+                      <div className="flex justify-between text-slate-500">
+                        <span>VAT {vatRate}%</span>
+                        <span>{formatBaht(tax)}</span>
+                      </div>
+                    </>
+                  ) : null}
                   <div className="flex justify-between text-slate-500">
-                    <span>ยอดก่อนภาษี</span>
-                    <span>{formatBaht(subTotal)}</span>
+                    <span>รายการ / จำนวนสินค้า</span>
+                    <span>
+                      {itemCount} รายการ / {totalQty} ชิ้น
+                    </span>
                   </div>
-                  <div className="flex justify-between text-slate-500">
-                    <span>VAT 7%</span>
-                    <span>{formatBaht(tax)}</span>
-                  </div>
+                  {discountAmount > 0 ? (
+                    <div className="flex justify-between text-slate-500">
+                      <span>ยอดก่อนลด</span>
+                      <span>{formatBaht(subTotal)}</span>
+                    </div>
+                  ) : null}
+                  {!isVatEnabled && discountAmount > 0 ? (
+                    <div className="flex justify-between text-emerald-600">
+                      <span>ส่วนลด</span>
+                      <span>-{formatBaht(discountAmount)}</span>
+                    </div>
+                  ) : null}
                   <div className="flex justify-between text-lg font-bold text-slate-900">
                     <span>รวมทั้งหมด</span>
                     <span>{formatBaht(total)}</span>
@@ -1301,6 +1927,144 @@ export default function PosLandingPages() {
           </div>
         ) : null}
 
+        {showCustomerPopup ? (
+          <div
+            className="fixed inset-0 z-[100] grid place-items-center bg-black/50 p-4"
+            onClick={closeCustomerPopup}
+          >
+            <div
+              className="flex max-h-[82vh] w-full max-w-xl flex-col rounded-2xl bg-white shadow-2xl"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="customer-picker-title"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 border-b border-slate-100 p-5">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-50 text-[#1d6fd8]">
+                    <IconUserPlus size={20} />
+                  </div>
+                  <div>
+                    <h3
+                      id="customer-picker-title"
+                      className="text-xl font-bold text-slate-900"
+                    >
+                      เลือกลูกค้า
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      ค้นหาแล้วเลือกลูกค้าสำหรับบิลนี้
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeCustomerPopup}
+                  className="text-slate-400 hover:text-slate-700"
+                  aria-label="ปิด"
+                >
+                  <IconX size={20} />
+                </button>
+              </div>
+
+              <div className="border-b border-slate-100 p-4">
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <IconSearch
+                      size={16}
+                      className="pointer-events-none absolute inset-y-0 left-3 my-auto text-slate-400"
+                    />
+                    <input
+                      ref={customerSearchRef}
+                      type="text"
+                      value={customerSearchQuery}
+                      onChange={(event) =>
+                        setCustomerSearchQuery(event.target.value)
+                      }
+                      placeholder="ค้นหาชื่อ / รหัส / เบอร์โทร"
+                      className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm text-slate-800 outline-none transition focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void fetchCustomerList()}
+                    disabled={isLoadingCustomers}
+                    title="โหลดข้อมูลใหม่"
+                    aria-label="โหลดข้อมูลลูกค้าใหม่"
+                    className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition hover:border-[#1d6fd8] hover:text-[#1d6fd8] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <IconRefresh size={18} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                {isLoadingCustomers ? (
+                  <div className="grid h-40 place-items-center text-sm text-slate-400">
+                    กำลังโหลดข้อมูลลูกค้า...
+                  </div>
+                ) : customerLoadError ? (
+                  <div className="flex h-40 flex-col items-center justify-center gap-3 text-center">
+                    <p className="text-sm text-red-500">{customerLoadError}</p>
+                    <button
+                      type="button"
+                      onClick={() => void fetchCustomerList()}
+                      className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                    >
+                      <IconRefresh size={16} />
+                      ลองอีกครั้ง
+                    </button>
+                  </div>
+                ) : filteredCustomers.length === 0 ? (
+                  <div className="grid h-40 place-items-center text-center text-sm text-slate-400">
+                    ไม่พบลูกค้า
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {filteredCustomers.map((customer) => {
+                      const isSelected = selectedCustomer?.id === customer.id;
+
+                      return (
+                        <button
+                          key={customer.id}
+                          type="button"
+                          onClick={() => selectCustomer(customer)}
+                          className={`flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-left transition ${
+                            isSelected
+                              ? "border-[#1d6fd8] bg-blue-50"
+                              : "border-slate-200 hover:border-[#4d9bf0] hover:bg-blue-50/50"
+                          }`}
+                        >
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-[#1d6fd8]">
+                            <IconUser size={20} />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <p className="truncate text-sm font-bold text-slate-900">
+                                {getCustomerName(customer)}
+                              </p>
+                              {customer.customer_code ? (
+                                <span className="shrink-0 rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500">
+                                  {customer.customer_code}
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-slate-500">
+                              <IconPhone size={13} className="shrink-0" />
+                              <span className="truncate">
+                                {getCustomerPhone(customer)}
+                              </span>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         {pendingScanInput ? (
           <div className="fixed inset-0 z-[100] grid place-items-center bg-black/50 p-4">
             <form
@@ -1323,11 +2087,7 @@ export default function PosLandingPages() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => {
-                    setPendingScanInput(null);
-                    setScanInputValue("");
-                    setScanMessage(null);
-                  }}
+                  onClick={closeScanInput}
                   className="text-slate-400 hover:text-slate-700"
                   aria-label="ปิด"
                 >
@@ -1370,11 +2130,7 @@ export default function PosLandingPages() {
               <div className="mt-5 flex gap-3">
                 <button
                   type="button"
-                  onClick={() => {
-                    setPendingScanInput(null);
-                    setScanInputValue("");
-                    setScanMessage(null);
-                  }}
+                  onClick={closeScanInput}
                   className="h-11 flex-1 rounded-xl border border-slate-200 font-semibold text-slate-700 hover:bg-slate-50"
                 >
                   ยกเลิก
@@ -1390,12 +2146,89 @@ export default function PosLandingPages() {
           </div>
         ) : null}
 
+        {/* Discount Popup */}
+        {discountPopupItemName && discountPopupItem ? (
+          <div className="fixed inset-0 z-[100] grid place-items-center bg-black/50 p-4">
+            <form
+              className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl"
+              onSubmit={(event) => {
+                event.preventDefault();
+                confirmDiscountPopup();
+              }}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-50 text-[#1d6fd8]">
+                    <IconDiscount size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-slate-900">
+                      ใส่ส่วนลด
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {discountPopupItem.name}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeDiscountPopup}
+                  className="text-slate-400 hover:text-slate-700"
+                  aria-label="ปิด"
+                >
+                  <IconX size={20} />
+                </button>
+              </div>
+
+              <p className="mt-4 rounded-xl bg-blue-50 px-3 py-2 text-sm text-blue-700">
+                ยอดรวมรายการ{" "}
+                {formatBaht(discountPopupItem.price * discountPopupItem.qty)}
+              </p>
+
+              <label className="mt-4 block text-sm font-medium text-slate-700">
+                ส่วนลดรายการนี้ (บาท)
+              </label>
+              <input
+                ref={discountInputRef}
+                type="number"
+                min="0"
+                max={discountPopupItem.price * discountPopupItem.qty}
+                step="0.01"
+                inputMode="decimal"
+                value={discountInputValue}
+                onChange={(event) => setDiscountInputValue(event.target.value)}
+                placeholder="0.00"
+                className="mt-2 h-12 w-full rounded-xl border border-slate-200 px-4 text-lg font-semibold text-slate-900 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+              />
+
+              <div className="mt-5 flex gap-3">
+                <button
+                  type="button"
+                  onClick={closeDiscountPopup}
+                  className="h-11 flex-1 rounded-xl border border-slate-200 font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="submit"
+                  className="h-11 flex-1 rounded-xl bg-[#1d6fd8] font-semibold text-white hover:bg-[#1557ad]"
+                >
+                  บันทึกส่วนลด
+                </button>
+              </div>
+            </form>
+          </div>
+        ) : null}
+
         {/* Shortcuts Modal */}
         {showShortcuts ? (
           <div className="fixed inset-0 z-[80] grid place-items-center bg-black/40 p-4">
             <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl">
               <h3 className="text-lg font-bold text-slate-900">คีย์ลัด</h3>
               <div className="mt-3 space-y-2 text-sm text-slate-600">
+                <p>
+                  <span className="font-bold text-slate-900">F3</span> เลือกลูกค้า
+                </p>
                 <p>
                   <span className="font-bold text-slate-900">F4</span> ชำระเงิน
                 </p>
@@ -1404,6 +2237,9 @@ export default function PosLandingPages() {
                 </p>
                 <p>
                   <span className="font-bold text-slate-900">F7</span> ลบรายการสินค้าทั้งหมด
+                </p>
+                <p>
+                  <span className="font-bold text-slate-900">F8</span> ใส่ส่วนลดรายการที่เลือก
                 </p>
                 <p>
                   <span className="font-bold text-slate-900">+</span> เพิ่มจำนวนสินค้า

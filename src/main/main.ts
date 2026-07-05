@@ -91,6 +91,11 @@ app.whenReady().then(async () => {
 
   ipcMain.handle("app:get-version", () => app.getVersion());
 
+  ipcMain.handle("app:quit", () => {
+    app.quit();
+    return true;
+  });
+
   ipcMain.handle("electron-store-get", (_event, key: string) => {
     return store.get(key);
   });

@@ -18,6 +18,7 @@ import {
   IconX,
 } from "@tabler/icons-react";
 import { ensureValidAccessToken, refreshAccessToken } from "./auth";
+import { normalizeBarcode } from "./BarcodeNormalizer";
 
 interface Category {
   id: number | string;
@@ -46,7 +47,23 @@ interface Product {
   [key: string]: unknown;
 }
 
-type PriceMode = "FIXED_PRICE" | "WEIGHT_PRICE" | "OPEN_PRICE";
+type PriceMode = "FIXED_PRICE" | "WEIGHT_PRICE" | "OPEN_PRICE" | "SERVICE_PRICE";
+
+interface ScannedProduct {
+  id: number | string;
+  barcode?: string;
+  name: string;
+  product_type: "FIXED_PRICE" | "WEIGHT" | "WEIGHT_PRICE" | "OPEN_PRICE" | "SERVICE_PRICE";
+  sale_price?: number;
+  stock_qty?: number;
+}
+
+interface ScanProductResponse {
+  success: boolean;
+  code?: string;
+  message?: string;
+  product?: ScannedProduct;
+}
 
 const PRICE_MODE_OPTIONS: { value: PriceMode; label: string; hint: string }[] = [
   {
@@ -63,6 +80,11 @@ const PRICE_MODE_OPTIONS: { value: PriceMode; label: string; hint: string }[] = 
     value: "OPEN_PRICE",
     label: "สินค้าปรับราคาได้",
     hint: "พนักงานกรอกราคาเองตอนขาย",
+  },
+  {
+    value: "SERVICE_PRICE",
+    label: "บริการ",
+    hint: "ไม่มีต้นทุน กรอกเฉพาะราคาขาย เช่น บริการโอนเงิน 1,000 บาท",
   },
 ];
 
@@ -131,6 +153,52 @@ const authorizedFetch = async (
   }
 
   return response;
+};
+
+const getStoredMachineId = (storedDevice: unknown): string | null => {
+  if (!storedDevice || typeof storedDevice !== "object") {
+    return null;
+  }
+
+  const device = storedDevice as {
+    machine_id?: unknown;
+    pos_device?: { machine_id?: unknown };
+  };
+  const machineId = device.machine_id ?? device.pos_device?.machine_id;
+
+  return typeof machineId === "string" && machineId.trim()
+    ? machineId.trim()
+    : null;
+};
+
+const scanProductByBarcode = async (
+  barcode: string,
+): Promise<ScanProductResponse> => {
+  const storedDevice = await window.electronStore.get("pos_device");
+  const machineId = getStoredMachineId(storedDevice);
+
+  if (!machineId) {
+    throw new Error("ไม่พบ machine_id กรุณาลงทะเบียนเครื่อง POS ก่อน");
+  }
+
+  const response = await authorizedFetch("/pos/scan-product", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      barcode,
+      machine_id: machineId,
+    }),
+  });
+
+  const data = (await response.json().catch(() => ({}))) as ScanProductResponse;
+
+  if (!response.ok && data.code !== "PRODUCT_NOT_FOUND") {
+    throw new Error(data.message || `สแกนสินค้าไม่สำเร็จ (${response.status})`);
+  }
+
+  return data;
 };
 
 const getApiErrorMessage = async (
@@ -271,6 +339,7 @@ export default function ProductLandingpage() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [isScanningBarcode, setIsScanningBarcode] = useState(false);
 
   // รูปสินค้าที่เลือกใหม่ (ยังไม่อัปโหลด) + พรีวิวในฟอร์ม
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -382,16 +451,31 @@ export default function ProductLandingpage() {
     };
   }, [products]);
 
+  // จัดเรียงหมวดหมู่ โดยให้ "สินค้าทั่วไป" (General) ขึ้นก่อน
+  const sortedCategories = useMemo(() => {
+    return [...categories].sort((a, b) => {
+      const aName = a.category_name;
+      const bName = b.category_name;
+      
+      // ให้ "General" อยู่ก่อน
+      if (aName === "General") return -1;
+      if (bName === "General") return 1;
+      
+      // เรียงตามชื่อตามปกติ
+      return aName.localeCompare(bName);
+    });
+  }, [categories]);
+
   const categoryNameById = useMemo(() => {
     const map = new Map<string, string>();
-    categories.forEach((category) => {
+    sortedCategories.forEach((category) => {
       map.set(
         String(category.id),
         getDisplayCategoryName(category.category_name),
       );
     });
     return map;
-  }, [categories]);
+  }, [sortedCategories]);
 
   const selectedCategoryLabel =
     selectedCategoryId === "ALL"
@@ -442,7 +526,7 @@ export default function ProductLandingpage() {
     setEditingProductId(null);
     setForm({
       ...EMPTY_FORM,
-      category_id: categories.length > 0 ? String(categories[0].id) : "",
+      category_id: sortedCategories.length > 0 ? String(sortedCategories[0].id) : "",
     });
     setSubmitError(null);
     setOriginalImageUrl(null);
@@ -487,6 +571,83 @@ export default function ProductLandingpage() {
     setIsModalOpen(true);
   };
 
+  const openEditModalFromScannedProduct = (scannedProduct: ScannedProduct) => {
+    const existingProduct = products.find(
+      (product) =>
+        String(product.id) === String(scannedProduct.id) ||
+        (scannedProduct.barcode &&
+          product.barcode === scannedProduct.barcode),
+    );
+
+    if (existingProduct) {
+      openEditModal(existingProduct);
+      return;
+    }
+
+    const scannedPriceMode: PriceMode =
+      scannedProduct.product_type === "WEIGHT"
+        ? "WEIGHT_PRICE"
+        : scannedProduct.product_type;
+
+    openEditModal({
+      id: scannedProduct.id,
+      barcode: scannedProduct.barcode ?? form.barcode.trim(),
+      product_name: scannedProduct.name,
+      category_id:
+        form.category_id ||
+        (sortedCategories.length > 0 ? String(sortedCategories[0].id) : ""),
+      unit_code: "",
+      price_mode: scannedPriceMode,
+      cost_price: 0,
+      sale_price: Number(scannedProduct.sale_price) || 0,
+      stock_qty: Number(scannedProduct.stock_qty) || 0,
+      min_stock_qty: 0,
+      track_stock: scannedProduct.product_type !== "SERVICE_PRICE",
+      allow_discount: true,
+      status: "ACTIVE",
+      image_url: null,
+    });
+  };
+
+  const handleBarcodeEnter = async () => {
+    const barcode = normalizeBarcode(form.barcode);
+
+    if (!barcode || isScanningBarcode) {
+      return;
+    }
+
+    if (barcode !== form.barcode) {
+      updateForm("barcode", barcode);
+    }
+
+    setIsScanningBarcode(true);
+    setSubmitError(null);
+
+    try {
+      const result = await scanProductByBarcode(barcode);
+
+      if (result.code === "PRODUCT_NOT_FOUND" || !result.success) {
+        setEditingProductId(null);
+        setSubmitError("ไม่มีสินค้าในระบบ สามารถเพิ่มสินค้าได้");
+        return;
+      }
+
+      if (!result.product) {
+        setSubmitError("ไม่พบข้อมูลสินค้า");
+        return;
+      }
+
+      openEditModalFromScannedProduct(result.product);
+    } catch (err) {
+      console.error("Error scanning product:", err);
+      setSubmitError(
+        err instanceof Error ? err.message : "ไม่สามารถสแกนสินค้าได้",
+      );
+    } finally {
+      setIsScanningBarcode(false);
+    }
+  };
+
   const closeModal = () => {
     if (isSubmitting) {
       return;
@@ -523,10 +684,36 @@ export default function ProductLandingpage() {
     updateForm("image_url", "");
   };
 
+  // ตรวจสอบว่าสามารถบันทึกได้หรือไม่
+  const isFormValid = useMemo(() => {
+    const trimmedBarcode = form.barcode.trim();
+    const trimmedUnitCode = form.unit_code.trim();
+    const trimmedProductName = form.product_name.trim();
+    
+    return trimmedBarcode !== "" && trimmedUnitCode !== "" && trimmedProductName !== "";
+  }, [form.barcode, form.unit_code, form.product_name]);
+
   const handleSubmitProduct = async (event: FormEvent) => {
     event.preventDefault();
 
     const trimmedName = form.product_name.trim();
+    const trimmedBarcode = normalizeBarcode(form.barcode);
+    const trimmedUnitCode = form.unit_code.trim();
+
+    // เพิ่มการตรวจสอบหน่วย
+    if (!trimmedUnitCode) {
+      setSubmitError("กรุณากรอกหน่วย");
+      return;
+    }
+
+    if (!trimmedBarcode) {
+      setSubmitError("กรุณากรอกบาร์โค้ด");
+      return;
+    }
+
+    if (trimmedBarcode !== form.barcode) {
+      updateForm("barcode", trimmedBarcode);
+    }
 
     if (!trimmedName) {
       setSubmitError("กรุณากรอกชื่อสินค้า");
@@ -567,23 +754,33 @@ export default function ProductLandingpage() {
           ? null
           : undefined;
 
-      const payload = {
+      const isService = form.price_mode === "SERVICE_PRICE";
+
+      const basePayload = {
         sku: trimmedSku || undefined,
-        barcode: form.barcode.trim() || undefined,
-        description: trimmedDescription || (isEditing ? null : undefined),
+        barcode: trimmedBarcode,
+        description: trimmedDescription || (isService ? "" : isEditing ? null : undefined),
         product_name: trimmedName,
         category_id: Number(form.category_id) || form.category_id,
-        unit_code: form.unit_code.trim(),
+        unit_code: trimmedUnitCode,
         price_mode: form.price_mode,
-        cost_price: Number(form.cost_price) || 0,
-        sale_price: Number(form.sale_price) || 0,
-        stock_qty: Number(form.stock_qty) || 0,
-        min_stock_qty: Number(form.min_stock_qty) || 0,
-        track_stock: form.track_stock,
-        allow_discount: form.allow_discount,
+        cost_price: isService ? 0 : Number(form.cost_price) || 0,
+        sale_price: isService ? 0 : Number(form.sale_price) || 0,
+        track_stock: isService ? false : form.track_stock,
+        allow_discount: isService ? false : form.allow_discount,
         status: "ACTIVE",
-        image_url: imageUrlForPayload,
+        ...(imageUrlForPayload !== undefined
+          ? { image_url: imageUrlForPayload }
+          : {}),
       };
+
+      const payload = isService
+        ? basePayload
+        : {
+            ...basePayload,
+            stock_qty: Number(form.stock_qty) || 0,
+            min_stock_qty: Number(form.min_stock_qty) || 0,
+          };
 
       const response = await authorizedFetch(
         isEditing ? `/products/${editingProductId}` : "/products",
@@ -750,7 +947,7 @@ export default function ProductLandingpage() {
                 >
                   สินค้าทั้งหมด
                 </button>
-                {categories.map((category) => (
+                {sortedCategories.map((category) => (
                   <button
                     key={category.id}
                     type="button"
@@ -880,11 +1077,18 @@ export default function ProductLandingpage() {
                     ) : null}
                   </div>
 
-                  <p className="text-sm font-semibold text-[#1d6fd8]">
-                    {product.price_mode === "OPEN_PRICE"
-                      ? "กรอกราคาตอนขาย"
-                      : `฿${Number(product.sale_price).toLocaleString()}`}
-                  </p>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+                    <span className="font-semibold text-[#1d6fd8]">
+                      {product.price_mode === "SERVICE_PRICE"
+                        ? "กรอกราคาตอนขาย"
+                        : `฿${Number(product.sale_price).toLocaleString()}`}
+                    </span>
+                    {product.price_mode === "OPEN_PRICE" ? (
+                      <span className="font-medium text-slate-500">
+                        สามารถเปลี่ยนแปลงราคาตอนขายได้
+                      </span>
+                    ) : null}
+                  </div>
                 </li>
               );
             })}
@@ -898,7 +1102,7 @@ export default function ProductLandingpage() {
           onClick={closeModal}
         >
           <div
-            className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl bg-white p-6 shadow-xl"
+            className="w-full max-w-3xl max-h-[95vh] overflow-y-auto rounded-2xl bg-white p-6 shadow-xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="mb-4 flex items-center justify-between">
@@ -971,24 +1175,36 @@ export default function ProductLandingpage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-4 gap-3">
                 <div className="col-span-2">
                   <label className="mb-1.5 block text-sm font-medium text-slate-600">
-                    ชื่อสินค้า
+                    บาร์โค้ด <span className="text-red-500">*</span>
                   </label>
                   <input
                     type="text"
-                    value={form.product_name}
+                    value={form.barcode}
                     onChange={(event) =>
-                      updateForm("product_name", event.target.value)
+                      updateForm("barcode", event.target.value)
                     }
-                    placeholder="เช่น กาแฟเย็น"
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        handleBarcodeEnter();
+                      }
+                    }}
+                    placeholder="8850000000001"
                     autoFocus
+                    disabled={isScanningBarcode}
                     className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
                   />
+                  {isScanningBarcode ? (
+                    <p className="mt-1 text-xs text-slate-400">
+                      กำลังตรวจสอบบาร์โค้ด...
+                    </p>
+                  ) : null}
                 </div>
 
-                <div>
+                <div className="col-span-2">
                   <label className="mb-1.5 block text-sm font-medium text-slate-600">
                     SKU <span className="text-slate-400">(ไม่บังคับ)</span>
                   </label>
@@ -1001,58 +1217,24 @@ export default function ProductLandingpage() {
                   />
                 </div>
 
-                <div>
+                <div className="col-span-3">
                   <label className="mb-1.5 block text-sm font-medium text-slate-600">
-                    บาร์โค้ด
+                    ชื่อสินค้า <span className="text-red-500">*</span>
                   </label>
                   <input
                     type="text"
-                    value={form.barcode}
+                    value={form.product_name}
                     onChange={(event) =>
-                      updateForm("barcode", event.target.value)
+                      updateForm("product_name", event.target.value)
                     }
-                    placeholder="8850000000001"
+                    placeholder="เช่น กาแฟเย็น"
                     className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
-                  />
-                </div>
-
-                <div className="col-span-2">
-                  <label className="mb-1.5 block text-sm font-medium text-slate-600">
-                    รายละเอียดสินค้า
-                  </label>
-                  <textarea
-                    value={form.description}
-                    onChange={(event) =>
-                      updateForm("description", event.target.value)
-                    }
-                    placeholder="เช่น รายละเอียด รสชาติ ขนาด หรือหมายเหตุของสินค้า"
-                    rows={3}
-                    className="w-full resize-y rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
                   />
                 </div>
 
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-slate-600">
-                    หมวดหมู่
-                  </label>
-                  <select
-                    value={form.category_id}
-                    onChange={(event) =>
-                      updateForm("category_id", event.target.value)
-                    }
-                    className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
-                  >
-                    {categories.map((category) => (
-                      <option key={category.id} value={String(category.id)}>
-                        {getDisplayCategoryName(category.category_name)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="mb-1.5 block text-sm font-medium text-slate-600">
-                    หน่วย
+                    หน่วย <span className="text-red-500">*</span>
                   </label>
                   <input
                     type="text"
@@ -1065,11 +1247,45 @@ export default function ProductLandingpage() {
                   />
                 </div>
 
-                <div className="col-span-2">
+                <div className="col-span-4">
+                  <label className="mb-1.5 block text-sm font-medium text-slate-600">
+                    รายละเอียดสินค้า
+                  </label>
+                  <textarea
+                    value={form.description}
+                    onChange={(event) =>
+                      updateForm("description", event.target.value)
+                    }
+                    placeholder="เช่น รายละเอียด รสชาติ ขนาด หรือหมายเหตุของสินค้า"
+                    rows={2}
+                    className="w-full resize-y rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+                  />
+                </div>
+
+                <div className="col-span-4">
+                  <label className="mb-1.5 block text-sm font-medium text-slate-600">
+                    หมวดหมู่
+                  </label>
+                  <select
+                    value={form.category_id}
+                    onChange={(event) =>
+                      updateForm("category_id", event.target.value)
+                    }
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+                  >
+                    {sortedCategories.map((category) => (
+                      <option key={category.id} value={String(category.id)}>
+                        {getDisplayCategoryName(category.category_name)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="col-span-4">
                   <label className="mb-1.5 block text-sm font-medium text-slate-600">
                     รูปแบบการคิดราคา
                   </label>
-                  <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
                     {PRICE_MODE_OPTIONS.map((option) => (
                       <label
                         key={option.value}
@@ -1080,9 +1296,16 @@ export default function ProductLandingpage() {
                           name="price_mode"
                           value={option.value}
                           checked={form.price_mode === option.value}
-                          onChange={() =>
-                            updateForm("price_mode", option.value)
-                          }
+                          onChange={() => {
+                            updateForm("price_mode", option.value);
+                            // บริการไม่มีต้นทุน/ไม่ตัดสต๊อก/ไม่มีส่วนลด/ไม่กรอกราคาที่นี่ ล้างค่าที่เกี่ยวข้องเมื่อเปลี่ยนมาโหมดนี้
+                            if (option.value === "SERVICE_PRICE") {
+                              updateForm("cost_price", "");
+                              updateForm("sale_price", "");
+                              updateForm("track_stock", false);
+                              updateForm("allow_discount", false);
+                            }
+                          }}
                           className="mt-0.5 h-4 w-4 accent-[#1d6fd8]"
                         />
                         <span>
@@ -1098,7 +1321,7 @@ export default function ProductLandingpage() {
                   </div>
                 </div>
 
-                <div>
+                <div className="col-span-2">
                   <label className="mb-1.5 block text-sm font-medium text-slate-600">
                     ราคาทุน
                   </label>
@@ -1110,16 +1333,23 @@ export default function ProductLandingpage() {
                     onChange={(event) =>
                       updateForm("cost_price", event.target.value)
                     }
-                    placeholder="0.00"
-                    className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+                    disabled={form.price_mode === "SERVICE_PRICE"}
+                    placeholder={
+                      form.price_mode === "SERVICE_PRICE"
+                        ? "บริการไม่มีต้นทุน"
+                        : "0.00"
+                    }
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20 disabled:bg-slate-100 disabled:text-slate-400"
                   />
                 </div>
 
-                <div>
+                <div className="col-span-2">
                   <label className="mb-1.5 block text-sm font-medium text-slate-600">
                     {form.price_mode === "WEIGHT_PRICE"
                       ? "ราคาขาย / กก."
-                      : "ราคาขาย"}
+                      : form.price_mode === "SERVICE_PRICE"
+                        ? "ราคาบริการ"
+                        : "ราคาขาย"}
                   </label>
                   <input
                     type="number"
@@ -1129,105 +1359,111 @@ export default function ProductLandingpage() {
                     onChange={(event) =>
                       updateForm("sale_price", event.target.value)
                     }
-                    disabled={form.price_mode === "OPEN_PRICE"}
+                    disabled={form.price_mode === "SERVICE_PRICE"}
                     placeholder={
                       form.price_mode === "OPEN_PRICE"
-                        ? "กรอกราคาตอนขาย"
-                        : "0.00"
+                        ? "ราคาเริ่มต้น (แก้ไขได้ตอนขาย)"
+                        : form.price_mode === "SERVICE_PRICE"
+                          ? "กรอกราคาตอนขาย"
+                          : "0.00"
                     }
                     className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20 disabled:bg-slate-100 disabled:text-slate-400"
                   />
                 </div>
 
-                <div className="col-span-2 flex items-center gap-3 rounded-xl border border-slate-200 px-3 py-2.5">
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={form.track_stock}
-                    onClick={() =>
-                      updateForm("track_stock", !form.track_stock)
-                    }
-                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
-                      form.track_stock
-                        ? "border-[#1d6fd8] bg-[#1d6fd8]"
-                        : "border-slate-300 bg-white"
-                    }`}
-                  >
-                    {form.track_stock ? (
-                      <span className="h-2 w-2 rounded-full bg-white" />
-                    ) : null}
-                  </button>
-                  <span
-                    className="cursor-pointer text-sm text-slate-600"
-                    onClick={() => updateForm("track_stock", !form.track_stock)}
-                  >
-                    ตัดสต๊อกสินค้านี้ (Track stock)
-                  </span>
-                </div>
-
-                {form.track_stock ? (
+                {form.price_mode !== "SERVICE_PRICE" ? (
                   <>
-                    <div>
-                      <label className="mb-1.5 block text-sm font-medium text-slate-600">
-                        จำนวนสต๊อก
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        value={form.stock_qty}
-                        onChange={(event) =>
-                          updateForm("stock_qty", event.target.value)
+                    <div className="col-span-2 flex items-center gap-3 rounded-xl border border-slate-200 px-3 py-2.5">
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={form.track_stock}
+                        onClick={() =>
+                          updateForm("track_stock", !form.track_stock)
                         }
-                        placeholder="0"
-                        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
-                      />
+                        className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
+                          form.track_stock
+                            ? "border-[#1d6fd8] bg-[#1d6fd8]"
+                            : "border-slate-300 bg-white"
+                        }`}
+                      >
+                        {form.track_stock ? (
+                          <span className="h-2 w-2 rounded-full bg-white" />
+                        ) : null}
+                      </button>
+                      <span
+                        className="cursor-pointer text-sm text-slate-600"
+                        onClick={() => updateForm("track_stock", !form.track_stock)}
+                      >
+                        ตัดสต๊อกสินค้านี้ (Track stock)
+                      </span>
                     </div>
 
-                    <div>
-                      <label className="mb-1.5 block text-sm font-medium text-slate-600">
-                        สต๊อกขั้นต่ำ
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        value={form.min_stock_qty}
-                        onChange={(event) =>
-                          updateForm("min_stock_qty", event.target.value)
+                    <div className="col-span-2 flex items-center gap-3 rounded-xl border border-slate-200 px-3 py-2.5">
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={form.allow_discount}
+                        onClick={() =>
+                          updateForm("allow_discount", !form.allow_discount)
                         }
-                        placeholder="0"
-                        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
-                      />
+                        className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
+                          form.allow_discount
+                            ? "border-[#1d6fd8] bg-[#1d6fd8]"
+                            : "border-slate-300 bg-white"
+                        }`}
+                      >
+                        {form.allow_discount ? (
+                          <span className="h-2 w-2 rounded-full bg-white" />
+                        ) : null}
+                      </button>
+                      <span
+                        className="cursor-pointer text-sm text-slate-600"
+                        onClick={() =>
+                          updateForm("allow_discount", !form.allow_discount)
+                        }
+                      >
+                        อนุญาตให้ส่วนลดสินค้านี้
+                      </span>
                     </div>
+
+                    {form.track_stock ? (
+                      <>
+                        <div className="col-span-2">
+                          <label className="mb-1.5 block text-sm font-medium text-slate-600">
+                            จำนวนสต๊อก
+                          </label>
+                          <input
+                            type="number"
+                            min={0}
+                            value={form.stock_qty}
+                            onChange={(event) =>
+                              updateForm("stock_qty", event.target.value)
+                            }
+                            placeholder="0"
+                            className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+                          />
+                        </div>
+
+                        <div className="col-span-2">
+                          <label className="mb-1.5 block text-sm font-medium text-slate-600">
+                            สต๊อกขั้นต่ำ
+                          </label>
+                          <input
+                            type="number"
+                            min={0}
+                            value={form.min_stock_qty}
+                            onChange={(event) =>
+                              updateForm("min_stock_qty", event.target.value)
+                            }
+                            placeholder="0"
+                            className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+                          />
+                        </div>
+                      </>
+                    ) : null}
                   </>
                 ) : null}
-
-                <div className="col-span-2 flex items-center gap-3 rounded-xl border border-slate-200 px-3 py-2.5">
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={form.allow_discount}
-                    onClick={() =>
-                      updateForm("allow_discount", !form.allow_discount)
-                    }
-                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
-                      form.allow_discount
-                        ? "border-[#1d6fd8] bg-[#1d6fd8]"
-                        : "border-slate-300 bg-white"
-                    }`}
-                  >
-                    {form.allow_discount ? (
-                      <span className="h-2 w-2 rounded-full bg-white" />
-                    ) : null}
-                  </button>
-                  <span
-                    className="cursor-pointer text-sm text-slate-600"
-                    onClick={() =>
-                      updateForm("allow_discount", !form.allow_discount)
-                    }
-                  >
-                    อนุญาตให้ส่วนลดสินค้านี้
-                  </span>
-                </div>
               </div>
 
               {submitError ? (
@@ -1245,8 +1481,12 @@ export default function ProductLandingpage() {
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmitting}
-                  className="flex-1 rounded-xl bg-[#1d6fd8] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#1a5fc0] disabled:opacity-50"
+                  disabled={isSubmitting || !isFormValid}
+                  className={`flex-1 rounded-xl px-4 py-2.5 text-sm font-medium text-white transition-colors ${
+                    isSubmitting || !isFormValid
+                      ? "bg-slate-400 cursor-not-allowed"
+                      : "bg-[#1d6fd8] hover:bg-[#1a5fc0]"
+                  }`}
                 >
                   {isSubmitting
                     ? isUploadingImage
