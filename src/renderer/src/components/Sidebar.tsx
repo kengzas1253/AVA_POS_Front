@@ -1,7 +1,7 @@
 import {
+  IconBuildingStore,
   IconChevronLeft,
   IconChevronRight,
-  IconDeviceLaptop,
   IconPackage,
   IconReceipt,
   IconSettings,
@@ -16,6 +16,7 @@ interface SidebarProps {
   onToggle: () => void;
   onNavigate: (page: string) => void;
   currentPage: string;
+  storeName?: string;
 }
 
 export default function Sidebar({
@@ -23,6 +24,7 @@ export default function Sidebar({
   onToggle,
   onNavigate,
   currentPage,
+  storeName = "AVA MY POS",
 }: SidebarProps) {
   const menuItems = [
     { id: "pos", label: "หน้าร้านขาย", icon: IconShoppingCart },
@@ -61,11 +63,14 @@ export default function Sidebar({
         >
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/20">
-              <IconDeviceLaptop size={22} className="text-white" />
+              <IconBuildingStore size={22} className="text-white" />
             </div>
             {isOpen ? (
-              <span className="text-lg font-bold tracking-tight text-white">
-                AVA MY POS
+              <span
+                className="truncate text-lg font-bold tracking-tight text-white"
+                title={storeName}
+              >
+                {storeName}
               </span>
             ) : null}
           </div>

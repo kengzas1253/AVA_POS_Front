@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -45,6 +46,17 @@ interface Product {
   status?: string;
   image_url?: string | null;
   [key: string]: unknown;
+}
+
+interface PaginatedProductsResponse {
+  data: Product[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+    hasMore: boolean;
+  };
 }
 
 type PriceMode = "FIXED_PRICE" | "WEIGHT_PRICE" | "OPEN_PRICE" | "SERVICE_PRICE";
@@ -105,8 +117,36 @@ const EMPTY_FORM = {
   image_url: "" as string | null | "",
 };
 
+const PRODUCT_NOT_FOUND_ADDABLE_MESSAGE = "ไม่มีสินค้าในระบบ สามารถเพิ่มสินค้าได้";
+
 const getDisplayCategoryName = (categoryName: string): string =>
   categoryName === "General" ? "สินค้าทั่วไป" : categoryName;
+
+const buildProductsPath = (
+  page: number,
+  limit: number,
+  search: string,
+  categoryId: string,
+) => {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+  });
+  const trimmedSearch = search.trim();
+  if (trimmedSearch) params.set("search", trimmedSearch);
+  if (categoryId) params.set("category_id", categoryId);
+  return `/products?${params.toString()}`;
+};
+
+const mergeUniqueProducts = (
+  currentProducts: Product[],
+  nextProducts: Product[],
+) => {
+  const byId = new Map<string, Product>();
+  currentProducts.forEach((product) => byId.set(String(product.id), product));
+  nextProducts.forEach((product) => byId.set(String(product.id), product));
+  return Array.from(byId.values());
+};
 
 const getApiBaseUrl = async (): Promise<string> => {
   const apiPath = await window.electronStore.get("apiPath");
@@ -325,11 +365,15 @@ const deleteProductImage = async (imageUrl?: string | null): Promise<void> => {
 export default function ProductLandingpage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [limit] = useState(50);
+  const [hasMore, setHasMore] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [selectedCategoryId, setSelectedCategoryId] = useState<string>("ALL");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>("");
   const [isCategoryMenuOpen, setIsCategoryMenuOpen] = useState(false);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -361,6 +405,7 @@ export default function ProductLandingpage() {
   >(null);
   const [productPendingDelete, setProductPendingDelete] =
     useState<Product | null>(null);
+  const loadingRef = useRef(false);
 
   const fetchCategories = async () => {
     try {
@@ -376,32 +421,86 @@ export default function ProductLandingpage() {
     }
   };
 
-  const fetchProducts = async () => {
-    setIsLoading(true);
+  const loadProducts = useCallback(
+    async ({
+      pageToLoad,
+      searchKeyword,
+      categoryId,
+      reset,
+    }: {
+      pageToLoad: number;
+      searchKeyword: string;
+      categoryId: string;
+      reset: boolean;
+    }) => {
+    if (loadingRef.current) return;
+
+    loadingRef.current = true;
+    setLoading(true);
     setError(null);
 
     try {
-      const response = await authorizedFetch("/products");
+      const response = await authorizedFetch(
+        buildProductsPath(pageToLoad, limit, searchKeyword, categoryId),
+      );
 
       if (!response.ok) {
         throw new Error(`โหลดข้อมูลไม่สำเร็จ (${response.status})`);
       }
 
-      const data: Product[] | { data?: Product[] } = await response.json();
-      const list = Array.isArray(data) ? data : data.data ?? [];
-      setProducts(list);
+      const payload = (await response.json()) as PaginatedProductsResponse;
+      const list = Array.isArray(payload.data) ? payload.data : [];
+      setProducts((currentProducts) =>
+        reset ? list : mergeUniqueProducts(currentProducts, list),
+      );
+      setPage(payload.pagination?.page ?? pageToLoad);
+      setHasMore(Boolean(payload.pagination?.hasMore));
     } catch (err) {
       console.error("Error fetching products:", err);
       setError("ไม่สามารถโหลดข้อมูลสินค้าได้ กรุณาลองใหม่อีกครั้ง");
     } finally {
-      setIsLoading(false);
+      loadingRef.current = false;
+      setLoading(false);
     }
-  };
+    },
+    [limit],
+  );
+
+  const fetchProducts = useCallback(() => {
+    setProducts([]);
+    setPage(1);
+    setHasMore(true);
+    return loadProducts({
+      pageToLoad: 1,
+      searchKeyword: debouncedSearch,
+      categoryId: selectedCategoryId,
+      reset: true,
+    });
+  }, [debouncedSearch, loadProducts, selectedCategoryId]);
 
   useEffect(() => {
     fetchCategories();
-    fetchProducts();
   }, []);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedSearch(searchTerm.trim());
+    }, 400);
+    return () => window.clearTimeout(timeoutId);
+  }, [searchTerm]);
+
+  useEffect(() => {
+    setProducts([]);
+    setResolvedImageUrls({});
+    setPage(1);
+    setHasMore(true);
+    void loadProducts({
+      pageToLoad: 1,
+      searchKeyword: debouncedSearch,
+      categoryId: selectedCategoryId,
+      reset: true,
+    });
+  }, [debouncedSearch, loadProducts, selectedCategoryId]);
 
   useEffect(() => {
     if (
@@ -478,38 +577,34 @@ export default function ProductLandingpage() {
   }, [sortedCategories]);
 
   const selectedCategoryLabel =
-    selectedCategoryId === "ALL"
+    selectedCategoryId === ""
       ? "สินค้าทั้งหมด"
       : categoryNameById.get(selectedCategoryId) ?? "สินค้าทั้งหมด";
 
-  const filteredProducts = useMemo(() => {
-    const keyword = searchTerm.trim().toLowerCase();
+  const selectedCategoryProductCount = useMemo(() => {
+    if (selectedCategoryId === "") {
+      return sortedCategories.reduce(
+        (total, category) => total + Number(category.product_count ?? 0),
+        0,
+      );
+    }
 
-    return products.filter((product) => {
-      const matchesCategory =
-        selectedCategoryId === "ALL" ||
-        String(product.category_id) === selectedCategoryId;
+    const selectedCategory = sortedCategories.find(
+      (category) => String(category.id) === selectedCategoryId,
+    );
+    return Number(selectedCategory?.product_count ?? 0);
+  }, [selectedCategoryId, sortedCategories]);
 
-      if (!matchesCategory) {
-        return false;
-      }
+  const handleSelectCategory = (categoryId: string) => {
+    setProducts([]);
+    setResolvedImageUrls({});
+    setPage(1);
+    setHasMore(true);
+    setSelectedCategoryId(categoryId);
+    setIsCategoryMenuOpen(false);
+  };
 
-      if (!keyword) {
-        return true;
-      }
-
-      const haystack = [
-        product.product_name,
-        product.description ?? "",
-        product.sku ?? "",
-        product.barcode ?? "",
-      ]
-        .join(" ")
-        .toLowerCase();
-
-      return haystack.includes(keyword);
-    });
-  }, [products, searchTerm, selectedCategoryId]);
+  const filteredProducts = products;
 
   const resetImageSelection = () => {
     if (imagePreviewUrl) {
@@ -571,7 +666,23 @@ export default function ProductLandingpage() {
     setIsModalOpen(true);
   };
 
-  const openEditModalFromScannedProduct = (scannedProduct: ScannedProduct) => {
+  const fetchProductDetail = async (
+    productId: number | string,
+  ): Promise<Product | null> => {
+    const response = await authorizedFetch(`/products/${productId}`);
+    if (!response.ok) return null;
+    const payload = (await response.json()) as Product | { data?: Product };
+    if (
+      typeof payload === "object" &&
+      payload !== null &&
+      "data" in payload
+    ) {
+      return (payload as { data?: Product }).data ?? null;
+    }
+    return payload as Product;
+  };
+
+  const openEditModalFromScannedProduct = async (scannedProduct: ScannedProduct) => {
     const existingProduct = products.find(
       (product) =>
         String(product.id) === String(scannedProduct.id) ||
@@ -581,6 +692,14 @@ export default function ProductLandingpage() {
 
     if (existingProduct) {
       openEditModal(existingProduct);
+      return;
+    }
+
+    const productDetail = await fetchProductDetail(scannedProduct.id).catch(
+      () => null,
+    );
+    if (productDetail) {
+      openEditModal(productDetail);
       return;
     }
 
@@ -628,7 +747,8 @@ export default function ProductLandingpage() {
 
       if (result.code === "PRODUCT_NOT_FOUND" || !result.success) {
         setEditingProductId(null);
-        setSubmitError("ไม่มีสินค้าในระบบ สามารถเพิ่มสินค้าได้");
+        // 🔴 แก้ไขตรงนี้: เปลี่ยนข้อความและให้เป็นสีเขียว
+        setSubmitError(PRODUCT_NOT_FOUND_ADDABLE_MESSAGE);
         return;
       }
 
@@ -637,7 +757,7 @@ export default function ProductLandingpage() {
         return;
       }
 
-      openEditModalFromScannedProduct(result.product);
+      await openEditModalFromScannedProduct(result.product);
     } catch (err) {
       console.error("Error scanning product:", err);
       setSubmitError(
@@ -881,6 +1001,19 @@ export default function ProductLandingpage() {
     }
   };
 
+  const handleProductsScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const element = event.currentTarget;
+    const distanceFromBottom =
+      element.scrollHeight - element.scrollTop - element.clientHeight;
+    if (distanceFromBottom > 240 || loading || !hasMore) return;
+    void loadProducts({
+      pageToLoad: page + 1,
+      searchKeyword: debouncedSearch,
+      categoryId: selectedCategoryId,
+      reset: false,
+    });
+  };
+
   return (
     <div className="flex h-full flex-col bg-slate-50 px-6 py-6">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
@@ -925,6 +1058,9 @@ export default function ProductLandingpage() {
             {selectedCategoryLabel}
             <IconChevronDown size={16} className="text-slate-400" />
           </button>
+          <p className="mt-1 text-right text-xs font-medium text-slate-500">
+            {selectedCategoryProductCount.toLocaleString("th-TH")} รายการ
+          </p>
 
           {isCategoryMenuOpen ? (
             <>
@@ -936,11 +1072,10 @@ export default function ProductLandingpage() {
                 <button
                   type="button"
                   onClick={() => {
-                    setSelectedCategoryId("ALL");
-                    setIsCategoryMenuOpen(false);
+                    handleSelectCategory("");
                   }}
                   className={`block w-full px-4 py-2.5 text-left text-sm hover:bg-slate-50 ${
-                    selectedCategoryId === "ALL"
+                    selectedCategoryId === ""
                       ? "font-medium text-[#1d6fd8]"
                       : "text-slate-600"
                   }`}
@@ -952,8 +1087,7 @@ export default function ProductLandingpage() {
                     key={category.id}
                     type="button"
                     onClick={() => {
-                      setSelectedCategoryId(String(category.id));
-                      setIsCategoryMenuOpen(false);
+                      handleSelectCategory(String(category.id));
                     }}
                     className={`block w-full px-4 py-2.5 text-left text-sm hover:bg-slate-50 ${
                       selectedCategoryId === String(category.id)
@@ -970,17 +1104,20 @@ export default function ProductLandingpage() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto rounded-2xl bg-white p-4 shadow-sm">
-        {isLoading ? (
+      <div
+        className="flex-1 overflow-y-auto rounded-2xl bg-white p-4 shadow-sm"
+        onScroll={handleProductsScroll}
+      >
+        {loading && products.length === 0 ? (
           <div className="flex h-40 items-center justify-center text-sm text-slate-400">
-            กำลังโหลดข้อมูล...
+            กำลังโหลดสินค้า...
           </div>
         ) : error ? (
           <div className="flex h-40 flex-col items-center justify-center gap-3 text-center">
             <p className="text-sm text-red-500">{error}</p>
             <button
               type="button"
-              onClick={fetchProducts}
+              onClick={() => void fetchProducts()}
               className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
             >
               ลองอีกครั้ง
@@ -990,12 +1127,13 @@ export default function ProductLandingpage() {
           <div className="flex h-40 flex-col items-center justify-center gap-2 text-center text-slate-400">
             <IconBox size={32} className="text-slate-300" />
             <p className="text-sm">
-              {searchTerm || selectedCategoryId !== "ALL"
-                ? "ไม่พบสินค้าที่ตรงกับเงื่อนไข"
+              {searchTerm || selectedCategoryId !== ""
+                ? "ไม่พบสินค้า"
                 : "ยังไม่มีสินค้า กดปุ่ม \"เพิ่มสินค้า\" เพื่อเริ่มต้น"}
             </p>
           </div>
         ) : (
+          <>
           <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {filteredProducts.map((product) => {
               const priceModeInfo = PRICE_MODE_OPTIONS.find(
@@ -1093,14 +1231,23 @@ export default function ProductLandingpage() {
               );
             })}
           </ul>
+          {loading ? (
+            <p className="py-4 text-center text-sm text-slate-400">
+              กำลังโหลดสินค้า...
+            </p>
+          ) : null}
+          {!loading && products.length > 0 && !hasMore ? (
+            <p className="py-4 text-center text-sm text-slate-400">
+              แสดงสินค้าทั้งหมดแล้ว
+            </p>
+          ) : null}
+          </>
         )}
       </div>
 
       {isModalOpen ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
-          onClick={closeModal}
-        >
+        // 🔴 แก้ตรงนี้: ลบ onClick={closeModal} ออกจาก div คลุมดำ เพื่อไม่ให้คลิกปิด
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
           <div
             className="w-full max-w-3xl max-h-[95vh] overflow-y-auto rounded-2xl bg-white p-6 shadow-xl"
             onClick={(event) => event.stopPropagation()}
@@ -1200,6 +1347,11 @@ export default function ProductLandingpage() {
                   {isScanningBarcode ? (
                     <p className="mt-1 text-xs text-slate-400">
                       กำลังตรวจสอบบาร์โค้ด...
+                    </p>
+                  ) : null}
+                  {submitError === PRODUCT_NOT_FOUND_ADDABLE_MESSAGE ? (
+                    <p className="mt-1.5 text-sm text-emerald-600">
+                      {submitError}
                     </p>
                   ) : null}
                 </div>
@@ -1466,8 +1618,9 @@ export default function ProductLandingpage() {
                 ) : null}
               </div>
 
-              {submitError ? (
-                <p className="text-sm text-red-500">{submitError}</p>
+              {submitError && submitError !== PRODUCT_NOT_FOUND_ADDABLE_MESSAGE ? (
+                // 🔴 แก้ตรงนี้: เปลี่ยนจาก text-red-500 เป็น text-emerald-600 (หรือสีเขียวอื่นตามต้องการ)
+                <p className="text-sm text-emerald-600">{submitError}</p>
               ) : null}
 
               <div className="flex gap-2">
@@ -1503,10 +1656,8 @@ export default function ProductLandingpage() {
       ) : null}
 
       {productPendingDelete ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
-          onClick={cancelDeleteProduct}
-        >
+        // 🔴 แก้ตรงนี้: ลบ onClick={cancelDeleteProduct} ออกจาก div คลุมดำ เพื่อไม่ให้คลิกปิด
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
           <div
             className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl"
             onClick={(event) => event.stopPropagation()}

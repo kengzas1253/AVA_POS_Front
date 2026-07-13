@@ -1,7 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import {
   IconCreditCard,
   IconDiscount,
+  IconFolderOpen,
   IconKeyboard,
   IconMenu2,
   IconMinus,
@@ -24,7 +31,10 @@ import Settingbar from "./Settingbar";
 import Categories from "./Categories";
 import Customer from "./Customer";
 import ProductLandingpage from "./ProductLandingpage";
+import PromotionPage from "./PromotionPage";
 import PrintBarcode from "./PrintBarcode";
+import POSPayment from "./POSPayment";
+import QuotationPage from "./QuotationPage";
 import PrinterSetting from "./PrinterSetting";
 import SettingPages from "./SettingPages";
 import { RegisterPage } from "./RegisterPage";
@@ -43,11 +53,27 @@ import { normalizeBarcode } from "./BarcodeNormalizer";
 
 interface CartItem {
   id?: number | string;
+  product_id?: number | string | null;
+  sku?: string | null;
+  barcode?: string | null;
   name: string;
+  product_name?: string;
+  category_id?: number | string | null;
   price: number;
   qty: number;
   unit?: string;
+  unit_code?: string | null;
+  price_mode?: string;
+  cost_price?: number | string | null;
+  sale_price?: number | string | null;
+  unit_price?: number | string | null;
+  discount_amount?: number | string | null;
+  final_price?: number | string | null;
+  total_amount?: number | string | null;
+  track_stock?: boolean;
   allow_discount?: boolean;
+  image_url?: string | null;
+  note?: string;
   discount: number;
 }
 
@@ -100,6 +126,7 @@ interface ScanProductResponse {
 }
 
 interface StoreSettings {
+  store_name?: string;
   vat_enabled?: boolean;
   vat_rate?: number;
 }
@@ -138,11 +165,127 @@ interface PendingScanInput {
   product: ScannedProduct;
 }
 
+interface HeldBill {
+  id: number | string;
+  hold_no?: string | null;
+  hold_name?: string | null;
+  customer_id?: string | null;
+  item_count?: number | string | null;
+  total_qty?: number | string | null;
+  total_amount?: number | string | null;
+  created_at?: string | null;
+}
+
+interface HeldBillItem {
+  id?: number | string;
+  product_id?: number | string | null;
+  sku?: string | null;
+  barcode?: string | null;
+  product_name?: string | null;
+  name?: string | null;
+  category_id?: number | string | null;
+  unit_code?: string | null;
+  price_mode?: string | null;
+  qty?: number | string | null;
+  cost_price?: number | string | null;
+  sale_price?: number | string | null;
+  unit_price?: number | string | null;
+  discount_amount?: number | string | null;
+  total_amount?: number | string | null;
+  track_stock?: boolean | null;
+  allow_discount?: boolean | null;
+  image_url?: string | null;
+  note?: string | null;
+}
+
+interface HeldBillDetail extends HeldBill {
+  items?: HeldBillItem[];
+  held_bill_items?: HeldBillItem[];
+}
+
+interface HeldBillsResponse {
+  data?: HeldBill[] | { data?: HeldBill[]; held_bills?: HeldBill[] };
+  held_bills?: HeldBill[];
+  message?: string;
+}
+
+interface HeldBillDetailResponse {
+  data?: HeldBillDetail;
+  held_bill?: HeldBillDetail;
+  message?: string;
+}
+
+type HeldBillPayloadItem = {
+  product_id: number | null;
+  sku: string | null;
+  barcode: string;
+  product_name: string;
+  category_id: number | null;
+  unit_code: string | null;
+  price_mode: string;
+  qty: number;
+  cost_price: number;
+  sale_price: number;
+  unit_price: number;
+  discount_amount: number;
+  total_amount: number;
+  track_stock: boolean;
+  allow_discount: boolean;
+  image_url: string | null;
+  note: string;
+};
+
+interface HeldBillPayload {
+  hold_name: string;
+  customer_id: string | null;
+  machine_id: string;
+  user_id: string;
+  note: string;
+  items: HeldBillPayloadItem[];
+}
+
+interface AppliedPromotion {
+  promotion_id: number | string;
+  promotion_name: string;
+  promotion_type?: string;
+  discount_amount?: number | string | null;
+  matched_qty?: number | string | null;
+}
+
+interface CalculatedPromotionItem {
+  product_id: number | string;
+  qty?: number | string | null;
+  unit_price?: number | string | null;
+  discount_amount?: number | string | null;
+  final_price?: number | string | null;
+}
+
+interface CalculatePromotionsResponse {
+  subtotal?: number | string | null;
+  discount_total?: number | string | null;
+  grand_total?: number | string | null;
+  applied_promotions?: AppliedPromotion[];
+  items?: CalculatedPromotionItem[];
+  message?: string;
+}
+
 const formatBaht = (value: number): string => `฿${value.toFixed(2)}`;
 
 // กำหนดเวลาในการรอรับบาร์โค้ดจากเครื่องสแกน (หน่วย: มิลลิวินาที)
 //const BARCODE_INPUT_TIMEOUT_MS = 5000;
 const BARCODE_INPUT_TIMEOUT_MS = 300;
+const SELECTED_POS_CUSTOMER_KEY = "pos_selected_customer";
+
+const isEditableKeyboardTarget = (target: EventTarget | null): boolean => {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  return Boolean(
+    target.isContentEditable ||
+      target.closest("input, textarea, select, [contenteditable]"),
+  );
+};
 
 const getStoredMachineId = (storedDevice: unknown): string | null => {
   if (!storedDevice || typeof storedDevice !== "object") {
@@ -385,6 +528,344 @@ const getCustomerName = (customer: PosCustomer): string =>
 const getCustomerPhone = (customer: PosCustomer): string =>
   customer.phone ?? customer.phone_number ?? customer.mobile ?? "-";
 
+const toPositiveInteger = (value: unknown): number | null => {
+  if (typeof value === "number") {
+    return Number.isInteger(value) && value >= 1 ? value : null;
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    const numericValue = Number(value);
+    return Number.isInteger(numericValue) && numericValue >= 1
+      ? numericValue
+      : null;
+  }
+
+  return null;
+};
+
+const normalizeHeldBillBarcode = (
+  value: unknown,
+  productId: number | string | null | undefined,
+): string => {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+
+  const normalizedProductId =
+    productId !== null && productId !== undefined && String(productId).trim()
+      ? String(productId).trim()
+      : "UNKNOWN";
+
+  return `NO-BARCODE-${normalizedProductId}`;
+};
+
+const getStoredUserId = (storedUser: unknown): string | null => {
+  if (!storedUser || typeof storedUser !== "object") {
+    return null;
+  }
+
+  const user = storedUser as { user_id?: unknown; id?: unknown };
+  const userId = user.user_id ?? user.id;
+  return typeof userId === "string" && userId.trim()
+    ? userId.trim()
+    : typeof userId === "number" && Number.isFinite(userId)
+      ? String(userId)
+      : null;
+};
+
+const getUserIdFromAccessToken = (accessToken: unknown): string | null => {
+  if (typeof accessToken !== "string" || !accessToken.trim()) {
+    return null;
+  }
+
+  try {
+    const payload = accessToken.split(".")[1];
+    if (!payload) {
+      return null;
+    }
+
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(
+      normalized.length + ((4 - (normalized.length % 4)) % 4),
+      "=",
+    );
+    const decoded = JSON.parse(window.atob(padded)) as {
+      user_id?: unknown;
+      id?: unknown;
+      sub?: unknown;
+    };
+
+    const userId = decoded.user_id ?? decoded.id ?? decoded.sub;
+    return typeof userId === "string" && userId.trim()
+      ? userId.trim()
+      : typeof userId === "number" && Number.isFinite(userId)
+        ? String(userId)
+        : null;
+  } catch {
+    return null;
+  }
+};
+
+const getAccessTokenClaims = (accessToken: unknown): Record<string, unknown> | null => {
+  if (typeof accessToken !== "string" || !accessToken.trim()) {
+    return null;
+  }
+
+  try {
+    const payload = accessToken.split(".")[1];
+    if (!payload) {
+      return null;
+    }
+
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(
+      normalized.length + ((4 - (normalized.length % 4)) % 4),
+      "=",
+    );
+    const decoded = JSON.parse(window.atob(padded));
+    return decoded && typeof decoded === "object"
+      ? (decoded as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const getHeldBillMachineId = (storedDevice: unknown): string | null => {
+  if (!storedDevice || typeof storedDevice !== "object") {
+    return null;
+  }
+
+  const device = storedDevice as {
+    machine_id?: unknown;
+    pos_device?: { machine_id?: unknown };
+  };
+  const machineId = device.machine_id ?? device.pos_device?.machine_id;
+
+  return typeof machineId === "string" && machineId.trim()
+    ? machineId.trim()
+    : null;
+};
+
+const getHeldBillErrorMessage = (error: unknown, fallback: string): string => {
+  if (error instanceof TypeError) {
+    return "ไม่สามารถเชื่อมต่อ API ได้";
+  }
+
+  if (error instanceof Error) {
+    if (
+      error.name === "AbortError" ||
+      error.name === "TimeoutError" ||
+      error.message.toLowerCase().includes("network")
+    ) {
+      return "ไม่สามารถเชื่อมต่อ API ได้";
+    }
+
+    return error.message || fallback;
+  }
+
+  return fallback;
+};
+
+const heldBillFetch = async (
+  path: string,
+  init: RequestInit = {},
+): Promise<Response> => {
+  const apiPath = await window.electronStore.get("apiPath");
+  if (typeof apiPath !== "string" || !apiPath.trim()) {
+    throw new Error("ไม่พบ API endpoint ใน store");
+  }
+  if (!(await ensureValidAccessToken())) {
+    throw new Error("ไม่สามารถยืนยันตัวตนได้ กรุณาเข้าสู่ระบบใหม่");
+  }
+
+  let accessToken = await window.electronStore.get("access_token");
+  if (typeof accessToken !== "string" || !accessToken.trim()) {
+    throw new Error("ไม่พบ access token");
+  }
+
+  const baseUrl = apiPath.trim().replace(/\/+$/, "");
+  const buildRequest = (token: string) =>
+    fetch(`${baseUrl}${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...(init.headers ?? {}),
+      },
+    });
+
+  let response = await buildRequest(accessToken);
+  if (response.status === 401) {
+    accessToken = await refreshAccessToken();
+    response = await buildRequest(accessToken);
+  }
+
+  return response;
+};
+
+const calculateCartPromotions = async (
+  items: CartItem[],
+): Promise<CalculatePromotionsResponse> => {
+  const response = await heldBillFetch("/pos/calculate-promotions", {
+    method: "POST",
+    body: JSON.stringify({
+      items: items.map((item) => ({
+        product_id: Number(item.product_id ?? item.id),
+        barcode: item.barcode ?? "",
+        product_name: item.product_name ?? item.name,
+        qty: Number(item.qty) || 0,
+        unit_price: Number(item.unit_price ?? item.price ?? item.sale_price ?? 0),
+      })),
+    }),
+  });
+  const data = (await response.json().catch(() => ({}))) as CalculatePromotionsResponse;
+
+  if (!response.ok) {
+    throw new Error(data.message || `Calculate promotions failed (${response.status})`);
+  }
+
+  return data;
+};
+
+const unwrapHeldBills = (payload: HeldBillsResponse | HeldBill[]): HeldBill[] => {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  if (Array.isArray(payload.held_bills)) {
+    return payload.held_bills;
+  }
+
+  if (Array.isArray(payload.data)) {
+    return payload.data;
+  }
+
+  if (payload.data && !Array.isArray(payload.data)) {
+    if (Array.isArray(payload.data.held_bills)) {
+      return payload.data.held_bills;
+    }
+
+    if (Array.isArray(payload.data.data)) {
+      return payload.data.data;
+    }
+  }
+
+  return [];
+};
+
+const loadHeldBills = async (): Promise<HeldBill[]> => {
+  const response = await heldBillFetch("/held-bills");
+  const data = (await response.json().catch(() => ({}))) as
+    | HeldBillsResponse
+    | HeldBill[];
+
+  if (!response.ok) {
+    const message =
+      !Array.isArray(data) && typeof data.message === "string"
+        ? data.message
+        : "";
+    throw new Error(message || `โหลดรายการบิลพักไม่สำเร็จ (${response.status})`);
+  }
+
+  return unwrapHeldBills(data);
+};
+
+const loadHeldBillDetail = async (
+  id: HeldBill["id"],
+): Promise<HeldBillDetail> => {
+  const response = await heldBillFetch(`/held-bills/${encodeURIComponent(id)}`);
+  const data = (await response.json().catch(() => ({}))) as
+    | HeldBillDetail
+    | HeldBillDetailResponse;
+
+  if (!response.ok) {
+    const message =
+      "message" in data && typeof data.message === "string" ? data.message : "";
+    throw new Error(message || `โหลดรายละเอียดบิลพักไม่สำเร็จ (${response.status})`);
+  }
+
+  if ("held_bill" in data && data.held_bill) {
+    return data.held_bill;
+  }
+
+  if ("data" in data && data.data) {
+    return data.data;
+  }
+
+  return data as HeldBillDetail;
+};
+
+const createHeldBill = async (payload: HeldBillPayload): Promise<void> => {
+  const response = await heldBillFetch("/held-bills", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  const data = (await response.json().catch(() => ({}))) as { message?: string };
+
+  if (!response.ok) {
+    throw new Error(data.message || `พักบิลไม่สำเร็จ (${response.status})`);
+  }
+};
+
+const deleteHeldBill = async (id: HeldBill["id"]): Promise<void> => {
+  const response = await heldBillFetch(`/held-bills/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  const data = (await response.json().catch(() => ({}))) as { message?: string };
+
+  if (!response.ok) {
+    throw new Error(data.message || `ลบบิลพักไม่สำเร็จ (${response.status})`);
+  }
+};
+
+const mapHeldBillItemToCartItem = (item: HeldBillItem): CartItem => {
+  const qty = Number(item.qty) || 0;
+  const unitPrice = Number(item.unit_price ?? item.sale_price ?? 0);
+  const productName = item.product_name ?? item.name ?? "-";
+
+  return {
+    id: item.product_id ?? item.id,
+    product_id: item.product_id ?? item.id ?? null,
+    sku: item.sku ?? null,
+    barcode: item.barcode ?? null,
+    name: productName,
+    product_name: productName,
+    category_id: item.category_id ?? null,
+    price: unitPrice,
+    qty,
+    unit: item.unit_code ?? undefined,
+    unit_code: item.unit_code ?? null,
+    price_mode: item.price_mode ?? "FIXED_PRICE",
+    cost_price: item.cost_price ?? 0,
+    sale_price: item.sale_price ?? unitPrice,
+    unit_price: unitPrice,
+    discount_amount: item.discount_amount ?? 0,
+    total_amount: item.total_amount ?? qty * unitPrice,
+    track_stock: item.track_stock ?? false,
+    allow_discount: item.allow_discount ?? true,
+    image_url: item.image_url ?? null,
+    note: item.note ?? "",
+    discount: Number(item.discount_amount ?? 0),
+  };
+};
+
+const formatHeldBillDate = (value?: string | null): string => {
+  if (!value) {
+    return "-";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString("th-TH", {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+};
+
 export default function PosLandingPages() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [currentPage, setCurrentPage] = useState("pos");
@@ -411,6 +892,7 @@ export default function PosLandingPages() {
     useState<PendingScanInput | null>(null);
   const [scanInputValue, setScanInputValue] = useState("");
   const [storeSettings, setStoreSettings] = useState<StoreSettings>({
+    store_name: "AVA MY POS",
     vat_enabled: false,
     vat_rate: 0,
   });
@@ -434,8 +916,33 @@ export default function PosLandingPages() {
     null,
   );
   const [customerSearchQuery, setCustomerSearchQuery] = useState("");
+  const [showHeldBillsModal, setShowHeldBillsModal] = useState(false);
+  const [heldBills, setHeldBills] = useState<HeldBill[]>([]);
+  const [isLoadingHeldBills, setIsLoadingHeldBills] = useState(false);
+  const [heldBillsError, setHeldBillsError] = useState<string | null>(null);
+  const [openingHeldBillId, setOpeningHeldBillId] = useState<
+    HeldBill["id"] | null
+  >(null);
+  const [activeHeldBillId, setActiveHeldBillId] = useState<
+    HeldBill["id"] | null
+  >(null);
+  const [showHoldBillModal, setShowHoldBillModal] = useState(false);
+  const [holdBillName, setHoldBillName] = useState("");
+  const [isHoldingBill, setIsHoldingBill] = useState(false);
+  const [holdBillError, setHoldBillError] = useState<string | null>(null);
+  const [posToast, setPosToast] = useState<string | null>(null);
+  const [promotionSubtotal, setPromotionSubtotal] = useState(0);
+  const [discountTotal, setDiscountTotal] = useState(0);
+  const [grandTotal, setGrandTotal] = useState(0);
+  const [appliedPromotions, setAppliedPromotions] = useState<AppliedPromotion[]>(
+    [],
+  );
+  const [promotionLoading, setPromotionLoading] = useState(false);
+  const [promotionError, setPromotionError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const barcodeInputRef = useRef<HTMLInputElement>(null);
   const customerSearchRef = useRef<HTMLInputElement>(null);
+  const holdBillNameRef = useRef<HTMLInputElement>(null);
   const scanInputRef = useRef<HTMLInputElement>(null);
   const discountInputRef = useRef<HTMLInputElement>(null);
   const barcodeBufferRef = useRef("");
@@ -456,6 +963,8 @@ export default function PosLandingPages() {
     "productList",
     "categories",
     "printBarcode",
+    "priceQuotation",
+    "promotion",
   ].includes(currentPage);
   const isSettingPage = [
     "settings",
@@ -468,27 +977,91 @@ export default function PosLandingPages() {
     "storeInfo",
   ].includes(currentPage);
 
-  const subTotal = useMemo(
+  const normalSubTotal = useMemo(
     () => cart.reduce((sum, item) => sum + item.price * item.qty, 0),
     [cart]
   );
+  const cartPromotionSignature = useMemo(
+    () =>
+      cart
+        .map((item) =>
+          [
+            item.product_id ?? item.id ?? "",
+            item.barcode ?? "",
+            item.product_name ?? item.name,
+            item.qty,
+            item.unit_price ?? item.price ?? item.sale_price ?? 0,
+          ].join(":"),
+        )
+        .join("|"),
+    [cart],
+  );
   const itemCount = cart.length;
   const totalQty = cart.reduce((sum, item) => sum + item.qty, 0);
-  const discountAmount = cart.reduce((sum, item) => {
-    if (!item.allow_discount) {
-      return sum;
-    }
-    const lineTotal = item.price * item.qty;
-    return sum + Math.min(Math.max(item.discount || 0, 0), lineTotal);
-  }, 0);
-  const netTotal = Math.max(subTotal - discountAmount, 0);
+  const subTotal = cart.length ? promotionSubtotal : 0;
+  const discountAmount = cart.length ? discountTotal : 0;
+  const netTotal = cart.length ? grandTotal : 0;
   const discountPopupItem = discountPopupItemName
     ? cart.find((item) => item.name === discountPopupItemName) ?? null
     : null;
   const vatRate = Number(storeSettings.vat_rate) || 0;
   const isVatEnabled = Boolean(storeSettings.vat_enabled) && vatRate > 0;
-  const tax = isVatEnabled ? netTotal * (vatRate / 100) : 0;
-  const total = netTotal + tax;
+  const tax = isVatEnabled ? Math.max(subTotal - discountAmount, 0) * (vatRate / 100) : 0;
+  const total = netTotal;
+  const displayStoreName = storeSettings.store_name?.trim() || "AVA MY POS";
+  const canFocusBarcodeInput = () =>
+    currentPage === "pos" &&
+    !showClearConfirm &&
+    !showShortcuts &&
+    !showCustomerPopup &&
+    !showHeldBillsModal &&
+    !showHoldBillModal &&
+    !pendingScanInput &&
+    !discountPopupItemName;
+
+  const focusBarcodeInput = (retry = true) => {
+    if (!canFocusBarcodeInput()) {
+      return;
+    }
+
+    const focusInput = () => {
+      barcodeInputRef.current?.focus();
+    };
+
+    requestAnimationFrame(focusInput);
+
+    if (retry) {
+      window.setTimeout(focusInput, 80);
+      window.setTimeout(focusInput, 200);
+    }
+  };
+
+  const focusSearchInput = (retry = true) => {
+    if (
+      currentPage !== "pos" ||
+      showClearConfirm ||
+      showShortcuts ||
+      showCustomerPopup ||
+      showHeldBillsModal ||
+      showHoldBillModal ||
+      pendingScanInput ||
+      discountPopupItemName
+    ) {
+      return;
+    }
+
+    const focusInput = () => {
+      searchRef.current?.focus();
+      searchRef.current?.select();
+    };
+
+    requestAnimationFrame(focusInput);
+
+    if (retry) {
+      window.setTimeout(focusInput, 80);
+      window.setTimeout(focusInput, 200);
+    }
+  };
   const filteredCustomers = useMemo(() => {
     const keyword = customerSearchQuery.trim().toLowerCase();
 
@@ -506,9 +1079,109 @@ export default function PosLandingPages() {
       ]
         .join(" ")
         .toLowerCase()
-        .includes(keyword),
+      .includes(keyword),
     );
   }, [customerSearchQuery, customers]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const resetPromotionState = () => {
+      setPromotionSubtotal(0);
+      setDiscountTotal(0);
+      setGrandTotal(0);
+      setAppliedPromotions([]);
+      setPromotionError(null);
+      setPromotionLoading(false);
+    };
+
+    const applyPromotions = async () => {
+      if (!cart.length) {
+        resetPromotionState();
+        return;
+      }
+
+      setPromotionLoading(true);
+      setPromotionError(null);
+
+      try {
+        const result = await calculateCartPromotions(cart);
+        if (isCancelled) {
+          return;
+        }
+
+        setPromotionSubtotal(Number(result.subtotal ?? normalSubTotal) || 0);
+        setDiscountTotal(Number(result.discount_total ?? 0) || 0);
+        setGrandTotal(Number(result.grand_total ?? normalSubTotal) || 0);
+        setAppliedPromotions(result.applied_promotions ?? []);
+
+        const calculatedItems = result.items ?? [];
+        setCart((currentItems) =>
+          currentItems.map((item) => {
+            const productId = item.product_id ?? item.id;
+            const calculated = calculatedItems.find(
+              (promotionItem) =>
+                Number(promotionItem.product_id) === Number(productId),
+            );
+            const discountAmount = Number(calculated?.discount_amount ?? 0) || 0;
+            const finalPrice =
+              Number(
+                calculated?.final_price ??
+                  item.final_price ??
+                  item.unit_price ??
+                  item.price ??
+                  item.sale_price ??
+                  0,
+              ) || 0;
+
+            return {
+              ...item,
+              discount_amount: discountAmount,
+              final_price: finalPrice,
+              total_amount: Math.max(finalPrice, 0),
+            };
+          }),
+        );
+      } catch (error) {
+        console.error("Calculate promotions error:", error);
+        if (isCancelled) {
+          return;
+        }
+
+        setPromotionSubtotal(normalSubTotal);
+        setDiscountTotal(0);
+        setGrandTotal(normalSubTotal);
+        setAppliedPromotions([]);
+        setPromotionError(
+          error instanceof Error
+            ? error.message
+            : "Cannot calculate promotions",
+        );
+        setCart((currentItems) =>
+          currentItems.map((item) => ({
+            ...item,
+            discount_amount: 0,
+            final_price:
+              (Number(item.qty) || 0) *
+              (Number(item.unit_price ?? item.price ?? item.sale_price ?? 0) || 0),
+            total_amount:
+              (Number(item.qty) || 0) *
+              (Number(item.unit_price ?? item.price ?? item.sale_price ?? 0) || 0),
+          })),
+        );
+      } finally {
+        if (!isCancelled) {
+          setPromotionLoading(false);
+        }
+      }
+    };
+
+    void applyPromotions();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [cartPromotionSignature, normalSubTotal]);
 
   const changeQty = (name: string, delta: number) => {
     const changedIndex = cart.findIndex((item) => item.name === name);
@@ -576,13 +1249,234 @@ export default function PosLandingPages() {
       );
       return remainingItems[nextIndex].name;
     });
+    focusBarcodeInput();
   };
 
   const clearCart = () => {
     setCart([]);
     setSelectedCartItemName(null);
-    setSelectedCustomer(null);
+    setActiveHeldBillId(null);
     setShowClearConfirm(false);
+    focusBarcodeInput();
+  };
+
+  const buildHeldBillPayload = async (
+    holdName: string,
+  ): Promise<HeldBillPayload> => {
+    const [storedDevice, storedUser, accessToken] = await Promise.all([
+      window.electronStore.get("pos_device"),
+      window.electronStore.get("user"),
+      window.electronStore.get("access_token"),
+    ]);
+    const machineId = getHeldBillMachineId(storedDevice);
+    const userId =
+      getStoredUserId(storedUser) ?? getUserIdFromAccessToken(accessToken);
+    const customerId =
+      typeof selectedCustomer?.customer_code === "string" &&
+      selectedCustomer.customer_code.trim()
+        ? selectedCustomer.customer_code.trim()
+        : null;
+    const tokenClaims = getAccessTokenClaims(accessToken);
+
+    console.log("Held bill auth source", {
+      storedUser,
+      tokenUserClaims: tokenClaims
+        ? {
+            user_id: tokenClaims.user_id,
+            id: tokenClaims.id,
+            sub: tokenClaims.sub,
+          }
+        : null,
+      resolvedUserId: userId,
+      storedDevice,
+      resolvedMachineId: machineId,
+    });
+
+    if (!userId) {
+      throw new Error("ไม่พบข้อมูลผู้ใช้งาน กรุณา Login ใหม่");
+    }
+
+    if (!machineId) {
+      throw new Error("ไม่พบ machine_id กรุณาลงทะเบียนเครื่อง POS ก่อน");
+    }
+
+    if (cart.length === 0) {
+      throw new Error("ไม่พบรายการสินค้าในตะกร้า");
+    }
+
+    const payload: HeldBillPayload = {
+      hold_name: holdName,
+      customer_id: customerId,
+      machine_id: machineId,
+      user_id: userId,
+      note: "",
+      items: cart.map((item) => {
+        const unitPrice = Number(item.unit_price ?? item.price ?? item.sale_price ?? 0);
+        const qty = Number(item.qty) || 0;
+        const discountAmount = Number(item.discount_amount ?? item.discount ?? 0);
+        const costPrice = Number(item.cost_price ?? 0);
+        const salePrice = Number(item.sale_price ?? item.price ?? 0);
+        const finalPrice = Number(item.final_price ?? qty * unitPrice);
+        const totalAmount = Number(
+          item.total_amount ?? Math.max(finalPrice, 0),
+        );
+        const productId = toPositiveInteger(item.product_id ?? item.id);
+
+        return {
+          product_id: productId,
+          sku: item.sku ?? null,
+          barcode: normalizeHeldBillBarcode(item.barcode, productId),
+          product_name: item.product_name ?? item.name,
+          category_id: toPositiveInteger(item.category_id),
+          unit_code: item.unit_code ?? item.unit ?? null,
+          price_mode: item.price_mode ?? "FIXED_PRICE",
+          qty,
+          cost_price: Number.isFinite(costPrice) ? costPrice : 0,
+          sale_price: Number.isFinite(salePrice) ? salePrice : 0,
+          unit_price: Number.isFinite(unitPrice) ? unitPrice : 0,
+          discount_amount: Number.isFinite(discountAmount)
+            ? discountAmount
+            : 0,
+          total_amount: Number.isFinite(totalAmount) ? totalAmount : 0,
+          track_stock: item.track_stock ?? false,
+          allow_discount: item.allow_discount ?? true,
+          image_url: item.image_url ?? null,
+          note: item.note ?? "",
+        };
+      }),
+    };
+
+    const invalidItem = payload.items.find(
+      (item) =>
+        !Number.isFinite(item.qty) ||
+        item.qty <= 0 ||
+        !Number.isFinite(item.unit_price) ||
+        !Number.isFinite(item.cost_price) ||
+        !Number.isFinite(item.sale_price) ||
+        !Number.isFinite(item.discount_amount) ||
+        !Number.isFinite(item.total_amount),
+    );
+
+    if (invalidItem) {
+      throw new Error("ข้อมูลสินค้าในตะกร้าไม่ถูกต้อง กรุณาตรวจสอบรายการสินค้า");
+    }
+
+    return payload;
+  };
+
+  const openHoldBillModal = () => {
+    if (!cart.length) {
+      return;
+    }
+
+    setHoldBillError(null);
+    setHoldBillName("");
+    setShowHoldBillModal(true);
+  };
+
+  const closeHoldBillModal = () => {
+    if (isHoldingBill) {
+      return;
+    }
+
+    setShowHoldBillModal(false);
+    setHoldBillError(null);
+    setHoldBillName("");
+  };
+
+  const submitHoldBill = async () => {
+    if (!cart.length || isHoldingBill) {
+      return;
+    }
+
+    setIsHoldingBill(true);
+    setHoldBillError(null);
+
+    try {
+      const payload = await buildHeldBillPayload(
+        holdBillName.trim() || "บิลพัก",
+      );
+      console.log("POST /held-bills payload", payload);
+      await createHeldBill(payload);
+      clearCart();
+      setShowHoldBillModal(false);
+      setHoldBillName("");
+      setPosToast("พักบิลสำเร็จ");
+    } catch (error) {
+      setHoldBillError(getHeldBillErrorMessage(error, "พักบิลไม่สำเร็จ"));
+    } finally {
+      setIsHoldingBill(false);
+    }
+  };
+
+  const fetchHeldBillList = async () => {
+    setIsLoadingHeldBills(true);
+    setHeldBillsError(null);
+
+    try {
+      setHeldBills(await loadHeldBills());
+    } catch (error) {
+      setHeldBillsError(
+        getHeldBillErrorMessage(error, "โหลดรายการบิลพักไม่สำเร็จ"),
+      );
+    } finally {
+      setIsLoadingHeldBills(false);
+    }
+  };
+
+  const openHeldBillsModal = () => {
+    setShowHeldBillsModal(true);
+    void fetchHeldBillList();
+  };
+
+  const handleHeldBillShortcut = () => {
+    if (cart.length > 0) {
+      openHoldBillModal();
+      return;
+    }
+
+    openHeldBillsModal();
+  };
+
+  const closeHeldBillsModal = () => {
+    if (openingHeldBillId !== null) {
+      return;
+    }
+
+    setShowHeldBillsModal(false);
+    setHeldBillsError(null);
+  };
+
+  const openHeldBill = async (heldBill: HeldBill) => {
+    if (cart.length > 0) {
+      const shouldReplace = window.confirm(
+        "ต้องการแทนที่ตะกร้าปัจจุบันด้วยบิลพักนี้หรือไม่?",
+      );
+      if (!shouldReplace) {
+        return;
+      }
+    }
+
+    setOpeningHeldBillId(heldBill.id);
+    setHeldBillsError(null);
+
+    try {
+      const detail = await loadHeldBillDetail(heldBill.id);
+      const items = detail.held_bill_items ?? detail.items ?? [];
+      const nextCart = items.map(mapHeldBillItemToCartItem);
+      await restoreHeldBillCustomer(detail.customer_id);
+
+      setCart(nextCart);
+      setSelectedCartItemName(nextCart[0]?.name ?? null);
+      setActiveHeldBillId(heldBill.id);
+      setShowHeldBillsModal(false);
+    } catch (error) {
+      setHeldBillsError(
+        getHeldBillErrorMessage(error, "โหลดรายละเอียดบิลพักไม่สำเร็จ"),
+      );
+    } finally {
+      setOpeningHeldBillId(null);
+    }
   };
 
   const openPriceInput = (product: ScannedProduct) => {
@@ -646,7 +1540,16 @@ export default function PosLandingPages() {
 
       if (found) {
         return items.map((item) =>
-          item === found ? { ...item, qty: item.qty + qty } : item,
+          item === found
+            ? {
+                ...item,
+                product_id: item.product_id ?? product.id,
+                barcode: item.barcode ?? product.barcode ?? null,
+                qty: item.qty + qty,
+                final_price: (item.qty + qty) * item.price,
+                total_amount: (item.qty + qty) * item.price,
+              }
+            : item,
         );
       }
 
@@ -654,15 +1557,24 @@ export default function PosLandingPages() {
         ...items,
         {
           id: product.id,
+          product_id: product.id,
+          barcode: product.barcode ?? null,
           name: product.name,
+          product_name: product.name,
           price,
           qty,
           unit: product.unit,
+          unit_price: price,
+          sale_price: product.sale_price ?? price,
           allow_discount: product.allow_discount ?? true,
+          discount_amount: 0,
+          final_price: price * qty,
+          total_amount: price * qty,
           discount: 0,
         },
       ];
     });
+    focusBarcodeInput();
   };
 
   const changeItemDiscount = (name: string, discount: number) => {
@@ -734,9 +1646,39 @@ export default function PosLandingPages() {
     setCustomerLoadError(null);
   };
 
+  const clearSelectedCustomer = () => {
+    setSelectedCustomer(null);
+    void window.electronStore.set(SELECTED_POS_CUSTOMER_KEY, null);
+  };
+
   const selectCustomer = (customer: PosCustomer) => {
     setSelectedCustomer(customer);
+    void window.electronStore.set(SELECTED_POS_CUSTOMER_KEY, customer);
     closeCustomerPopup();
+  };
+
+  const restoreHeldBillCustomer = async (customerCode?: string | null) => {
+    const normalizedCustomerCode =
+      typeof customerCode === "string" && customerCode.trim()
+        ? customerCode.trim()
+        : null;
+
+    if (!normalizedCustomerCode) {
+      clearSelectedCustomer();
+      return;
+    }
+
+    const customerList = await loadCustomers();
+    const matchedCustomer =
+      customerList.find(
+        (customer) => customer.customer_code === normalizedCustomerCode,
+      ) ?? null;
+
+    setSelectedCustomer(matchedCustomer);
+    void window.electronStore.set(
+      SELECTED_POS_CUSTOMER_KEY,
+      matchedCustomer,
+    );
   };
 
   const confirmQuitApp = () => {
@@ -782,7 +1724,7 @@ export default function PosLandingPages() {
 
     addScannedProductToCart(cartProduct, Number(product.price) || 0);
     setSearchQuery("");
-    requestAnimationFrame(() => searchRef.current?.focus());
+    focusBarcodeInput();
   };
 
   const handleProductSearch = async () => {
@@ -790,12 +1732,49 @@ export default function PosLandingPages() {
     if (!keyword || isSearching) {
       return;
     }
+    let shouldRefocusSearch = true;
 
     setIsSearching(true);
     setSearchMessage(null);
     setSearchResults([]);
 
     try {
+      const normalizedBarcode = normalizeBarcode(keyword);
+      if (/^\d{4,}$/.test(normalizedBarcode)) {
+        const scanResult = await scanProduct(normalizedBarcode);
+
+        if (scanResult.success && scanResult.product) {
+          if (
+            scanResult.code === "WEIGHT_REQUIRED" ||
+            scanResult.product.product_type === "WEIGHT"
+          ) {
+            setScanInputValue("");
+            setPendingScanInput({ type: "WEIGHT", product: scanResult.product });
+            setSearchQuery("");
+            shouldRefocusSearch = false;
+            return;
+          }
+
+          if (
+            scanResult.code === "PRICE_REQUIRED" ||
+            scanResult.product.product_type === "OPEN_PRICE" ||
+            scanResult.product.product_type === "SERVICE_PRICE"
+          ) {
+            openPriceInput(scanResult.product);
+            setSearchQuery("");
+            shouldRefocusSearch = false;
+            return;
+          }
+
+          addScannedProductToCart(
+            scanResult.product,
+            Number(scanResult.product.sale_price) || 0,
+          );
+          setSearchQuery("");
+          return;
+        }
+      }
+
       const result = await searchProducts(keyword);
       const products = unwrapSearchedProducts(result.data);
 
@@ -824,6 +1803,9 @@ export default function PosLandingPages() {
       );
     } finally {
       setIsSearching(false);
+      if (shouldRefocusSearch) {
+        focusBarcodeInput();
+      }
     }
   };
 
@@ -836,6 +1818,7 @@ export default function PosLandingPages() {
     if (!normalizedBarcode) {
       return;
     }
+    let shouldRefocusBarcode = true;
 
     if (isScanningRef.current) {
       pendingBarcodeScanQueueRef.current.push(normalizedBarcode);
@@ -865,6 +1848,7 @@ export default function PosLandingPages() {
       ) {
         setScanInputValue("");
         setPendingScanInput({ type: "WEIGHT", product: result.product });
+        shouldRefocusBarcode = false;
         return;
       }
 
@@ -874,6 +1858,7 @@ export default function PosLandingPages() {
         result.product.product_type === "SERVICE_PRICE"
       ) {
         openPriceInput(result.product);
+        shouldRefocusBarcode = false;
         return;
       }
 
@@ -894,6 +1879,8 @@ export default function PosLandingPages() {
         // pendingBarcode ถูก normalize มาแล้วตั้งแต่ตอน push เข้าคิว
         // จึงเรียก processNormalizedBarcode ตรงๆ ห้ามวนกลับไป normalize ซ้ำ
         void processNormalizedBarcode(pendingBarcode);
+      } else if (shouldRefocusBarcode) {
+        focusBarcodeInput();
       }
     }
   };
@@ -901,6 +1888,62 @@ export default function PosLandingPages() {
   const handleBarcodeScan = async (barcode: string) => {
     const normalizedBarcode = normalizeBarcode(barcode);
     await processNormalizedBarcode(normalizedBarcode);
+  };
+
+  const handleBarcodeInputKeyDown = (
+    event: ReactKeyboardEvent<HTMLInputElement>,
+  ) => {
+    if (event.key === "Enter") {
+      if (barcodeBufferRef.current) {
+        event.preventDefault();
+        const barcode = barcodeBufferRef.current;
+        barcodeBufferRef.current = "";
+        setBarcodeBuffer("");
+        if (barcodeTimerRef.current) {
+          clearTimeout(barcodeTimerRef.current);
+        }
+        void handleBarcodeScan(barcode);
+      }
+      return;
+    }
+
+    if (event.key === "Backspace" && barcodeBufferRef.current) {
+      event.preventDefault();
+      barcodeBufferRef.current = barcodeBufferRef.current.slice(0, -1);
+      setBarcodeBuffer(barcodeBufferRef.current);
+      return;
+    }
+
+    if (event.key === "Escape" && barcodeBufferRef.current) {
+      event.preventDefault();
+      barcodeBufferRef.current = "";
+      setBarcodeBuffer("");
+      if (barcodeTimerRef.current) {
+        clearTimeout(barcodeTimerRef.current);
+      }
+      return;
+    }
+
+    if (
+      event.key.length !== 1 ||
+      event.ctrlKey ||
+      event.altKey ||
+      event.metaKey
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    barcodeBufferRef.current += event.key;
+    setBarcodeBuffer(barcodeBufferRef.current);
+
+    if (barcodeTimerRef.current) {
+      clearTimeout(barcodeTimerRef.current);
+    }
+    barcodeTimerRef.current = setTimeout(() => {
+      barcodeBufferRef.current = "";
+      setBarcodeBuffer("");
+    }, BARCODE_INPUT_TIMEOUT_MS);
   };
 
   const confirmScanInput = () => {
@@ -935,11 +1978,23 @@ export default function PosLandingPages() {
     setSearchQuery("");
     setSearchResults([]);
     setSearchMessage(null);
+    focusBarcodeInput();
   };
 
-  const processPayment = () => {
+  const processPayment = async () => {
     if (!cart.length) {
       return;
+    }
+
+    if (activeHeldBillId !== null) {
+      try {
+        await deleteHeldBill(activeHeldBillId);
+      } catch (error) {
+        setScanMessage(
+          getHeldBillErrorMessage(error, "ลบบิลพักหลังชำระเงินไม่สำเร็จ"),
+        );
+        return;
+      }
     }
 
     window.alert(`ชำระเงินสำเร็จ ${formatBaht(total)}`);
@@ -995,6 +2050,55 @@ export default function PosLandingPages() {
     return () => clearTimeout(timer);
   }, [showCustomerPopup]);
 
+  useEffect(() => {
+    let isCancelled = false;
+
+    const restoreSelectedCustomer = async () => {
+      const storedCustomer = await window.electronStore.get(
+        SELECTED_POS_CUSTOMER_KEY,
+      );
+
+      if (
+        !isCancelled &&
+        storedCustomer &&
+        typeof storedCustomer === "object" &&
+        "id" in storedCustomer
+      ) {
+        setSelectedCustomer(storedCustomer as PosCustomer);
+      }
+    };
+
+    if (currentPage === "pos") {
+      void restoreSelectedCustomer();
+    }
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentPage]);
+
+  useEffect(() => {
+    if (!showHoldBillModal) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      holdBillNameRef.current?.focus();
+      holdBillNameRef.current?.select();
+    }, 50);
+
+    return () => clearTimeout(timer);
+  }, [showHoldBillModal]);
+
+  useEffect(() => {
+    if (!posToast) {
+      return;
+    }
+
+    const timer = setTimeout(() => setPosToast(null), 2400);
+    return () => clearTimeout(timer);
+  }, [posToast]);
+
   // ปิด popup ส่วนลดอัตโนมัติถ้ารายการสินค้านั้นถูกลบออกจากตะกร้าแล้ว
   useEffect(() => {
     if (
@@ -1014,6 +2118,7 @@ export default function PosLandingPages() {
         const settings = await loadStoreSettings();
         if (!isCancelled) {
           setStoreSettings({
+            store_name: settings.store_name?.trim() || "AVA MY POS",
             vat_enabled: Boolean(settings.vat_enabled),
             vat_rate: Number(settings.vat_rate) || 0,
           });
@@ -1021,7 +2126,11 @@ export default function PosLandingPages() {
       } catch (err) {
         console.error("Error loading store settings:", err);
         if (!isCancelled) {
-          setStoreSettings({ vat_enabled: false, vat_rate: 0 });
+          setStoreSettings({
+            store_name: "AVA MY POS",
+            vat_enabled: false,
+            vat_rate: 0,
+          });
         }
       }
     };
@@ -1049,13 +2158,20 @@ export default function PosLandingPages() {
   }, [currentPage]);
 
   useEffect(() => {
+    if (currentPage !== "pos") {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      focusBarcodeInput();
+    }, 50);
+
+    return () => clearTimeout(timer);
+  }, [currentPage]);
+
+  useEffect(() => {
     const handleScannerKeyboard = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      const isTyping =
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement ||
-        target?.isContentEditable;
+      const isTyping = isEditableKeyboardTarget(event.target);
 
       if (
         currentPage !== "pos" ||
@@ -1063,6 +2179,8 @@ export default function PosLandingPages() {
         showClearConfirm ||
         showShortcuts ||
         showCustomerPopup ||
+        showHeldBillsModal ||
+        showHoldBillModal ||
         pendingScanInput
       ) {
         return;
@@ -1145,6 +2263,8 @@ export default function PosLandingPages() {
     showClearConfirm,
     showShortcuts,
     showCustomerPopup,
+    showHeldBillsModal,
+    showHoldBillModal,
   ]);
 
   useEffect(() => {
@@ -1227,12 +2347,7 @@ export default function PosLandingPages() {
   // จัดการคีย์บอร์ดหลัก
   useEffect(() => {
     const handleKeyboardShortcut = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      const isTyping =
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement ||
-        target?.isContentEditable;
+      const isTyping = isEditableKeyboardTarget(event.target);
 
       // ถ้า Popup ยืนยันการลบเปิดอยู่ ให้ข้ามการทำงานทั้งหมด
       if (showClearConfirm) {
@@ -1242,6 +2357,18 @@ export default function PosLandingPages() {
       if (event.key === "Escape" && showCustomerPopup) {
         event.preventDefault();
         closeCustomerPopup();
+        return;
+      }
+
+      if (event.key === "Escape" && showHeldBillsModal) {
+        event.preventDefault();
+        closeHeldBillsModal();
+        return;
+      }
+
+      if (event.key === "Escape" && showHoldBillModal) {
+        event.preventDefault();
+        closeHoldBillModal();
         return;
       }
 
@@ -1271,7 +2398,7 @@ export default function PosLandingPages() {
 
       if (event.key === "F2") {
         event.preventDefault();
-        searchRef.current?.focus();
+        handleHeldBillShortcut();
         return;
       }
 
@@ -1287,7 +2414,9 @@ export default function PosLandingPages() {
 
       if (event.key === "F4") {
         event.preventDefault();
-        processPayment();
+        if (cart.length > 0) {
+          setCurrentPage("posPayment");
+        }
         return;
       }
 
@@ -1342,14 +2471,34 @@ export default function PosLandingPages() {
     pendingScanInput,
     discountPopupItemName,
     showCustomerPopup,
+    showHeldBillsModal,
+    showHoldBillModal,
     selectedCartItemName,
     showShortcuts,
     showClearConfirm,
     total,
+    isHoldingBill,
+    activeHeldBillId,
   ]);
 
+  if (currentPage === "posPayment") {
+    return (
+      <POSPayment
+        cartItems={cart}
+        subtotal={subTotal}
+        discount={discountAmount}
+        total={total}
+        onBack={() => setCurrentPage("pos")}
+        onPaymentComplete={() => {
+          clearCart();
+          setCurrentPage("pos");
+        }}
+      />
+    );
+  }
+
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-slate-50 font-sans antialiased">
+    <div className="flex h-[100dvh] max-h-[100dvh] min-h-[100svh] w-full overflow-hidden bg-slate-50 font-sans antialiased">
       {isProductPage ? (
         <SidebarProduct
           isOpen={sidebarOpen}
@@ -1357,6 +2506,7 @@ export default function PosLandingPages() {
           onNavigate={setCurrentPage}
           currentPage={currentPage}
           onSwitchSidebar={() => setCurrentPage("pos")}
+          storeName={displayStoreName}
         />
       ) : isSettingPage ? (
         <Settingbar
@@ -1365,6 +2515,7 @@ export default function PosLandingPages() {
           onNavigate={setCurrentPage}
           currentPage={currentPage}
           onSwitchSidebar={() => setCurrentPage("pos")}
+          storeName={displayStoreName}
         />
       ) : (
         <Sidebar
@@ -1372,6 +2523,7 @@ export default function PosLandingPages() {
           onToggle={() => setSidebarOpen((value) => !value)}
           onNavigate={(page) => setCurrentPage(page === "products" ? "productList" : page)}
           currentPage={currentPage}
+          storeName={displayStoreName}
         />
       )}
 
@@ -1399,6 +2551,16 @@ export default function PosLandingPages() {
           </div>
 
           <div className="flex items-center gap-2">
+            <input
+              ref={barcodeInputRef}
+              value={barcodeBuffer}
+              onChange={() => undefined}
+              onKeyDown={handleBarcodeInputKeyDown}
+              aria-label="Barcode scanner input"
+              autoComplete="off"
+              inputMode="none"
+              className="h-8 w-80 rounded-lg border border-transparent bg-transparent px-2 font-mono text-transparent caret-transparent outline-none focus:border-white/20 focus:bg-white/5"
+            />
             {isScanning ? (
               <span className="rounded-lg border border-white/40 bg-white/15 px-3 py-1 text-xs font-semibold text-white">
                 กำลังค้นหาสินค้า...
@@ -1421,6 +2583,7 @@ export default function PosLandingPages() {
               onClick={() => {
                 barcodeBufferRef.current = "";
                 setBarcodeBuffer("");
+                focusBarcodeInput();
               }}
               className="flex h-8 w-8 items-center justify-center rounded-lg text-white/90 transition hover:bg-white/15"
               title="พร้อมรับบาร์โค้ดจากเครื่องสแกน"
@@ -1436,6 +2599,10 @@ export default function PosLandingPages() {
           <Categories />
         ) : currentPage === "printBarcode" ? (
           <PrintBarcode />
+        ) : currentPage === "priceQuotation" ? (
+          <QuotationPage />
+        ) : currentPage === "promotion" ? (
+          <PromotionPage />
         ) : currentPage === "customers" ? (
           <Customer />
         ) : currentPage === "userInfo" ? (
@@ -1451,11 +2618,11 @@ export default function PosLandingPages() {
           currentPage === "receipt" ? (
           <SettingPages page={currentPage} />
         ) : (
-          <main className="grid min-h-0 flex-1 grid-cols-[1fr_480px] gap-4 p-4">
-            <section className="flex min-w-0 flex-col rounded-xl border border-slate-200 bg-white">
-              <div className="border-b border-slate-100 p-4">
+          <main className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(360px,480px)] gap-4 overflow-hidden p-4 [@media(max-height:720px)]:gap-3 [@media(max-height:720px)]:p-3">
+            <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white">
+              <div className="shrink-0 border-b border-slate-100 p-4 [@media(max-height:720px)]:p-3">
                 <form
-                  className="relative"
+                  className="relative z-20"
                   onSubmit={(event) => {
                     event.preventDefault();
                     void handleProductSearch();
@@ -1475,10 +2642,10 @@ export default function PosLandingPages() {
                       setSearchMessage(null);
                     }}
                     placeholder="ค้นหาสินค้า ชื่อ / SKU / บาร์โค้ด แล้วกด Enter"
-                    className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-9 text-[13px] text-slate-800 placeholder:text-slate-400 outline-none transition focus:border-[#4d9bf0] focus:ring-2 focus:ring-[#4d9bf0]/20"
+                    className="relative z-10 h-10 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-9 text-[13px] text-slate-800 placeholder:text-slate-400 outline-none transition focus:border-[#4d9bf0] focus:ring-2 focus:ring-[#4d9bf0]/20"
                   />
                   {isSearching ? (
-                    <span className="absolute inset-y-0 right-3 my-auto flex items-center text-xs text-slate-400">
+                    <span className="pointer-events-none absolute inset-y-0 right-3 z-20 my-auto flex items-center text-xs text-slate-400">
                       กำลังค้นหา...
                     </span>
                   ) : searchQuery ? (
@@ -1490,7 +2657,7 @@ export default function PosLandingPages() {
                         setSearchMessage(null);
                         searchRef.current?.focus();
                       }}
-                      className="absolute inset-y-0 right-3 my-auto text-slate-400 hover:text-slate-700"
+                      className="absolute inset-y-0 right-3 z-20 my-auto text-slate-400 hover:text-slate-700"
                     >
                       <IconX size={14} />
                     </button>
@@ -1671,20 +2838,29 @@ export default function PosLandingPages() {
               />
             </section>
 
-            <aside className="flex min-h-0 flex-col rounded-xl border border-slate-200 bg-white">
-              <div className="flex h-14 items-center justify-between gap-2 border-b border-slate-100 px-4">
+            <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white">
+              <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-slate-100 px-4 [@media(max-height:720px)]:h-12 [@media(max-height:720px)]:px-3">
                 <div className="flex min-w-0 items-center gap-2">
                   <IconShoppingCart size={20} className="text-[#1d6fd8]" />
                   <div className="min-w-0">
                     <h2 className="font-bold text-slate-900">ตะกร้าสินค้า</h2>
                     {selectedCustomer ? (
-                      <p className="truncate text-xs font-medium text-[#1d6fd8]">
+                      <p className="mt-0.5 max-w-[260px] truncate text-base font-bold leading-5 text-[#1d6fd8]">
                         {getCustomerName(selectedCustomer)}
                       </p>
                     ) : null}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={openHeldBillsModal}
+                    title="เปิดบิลที่พัก"
+                    aria-label="เปิดบิลที่พัก"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-amber-200 bg-amber-50 text-amber-700 transition hover:border-amber-300 hover:bg-amber-100"
+                  >
+                    <IconFolderOpen size={18} />
+                  </button>
                   <button
                     type="button"
                     onClick={openCustomerPopup}
@@ -1701,7 +2877,7 @@ export default function PosLandingPages() {
                   {selectedCustomer ? (
                     <button
                       type="button"
-                      onClick={() => setSelectedCustomer(null)}
+                      onClick={clearSelectedCustomer}
                       title="ล้างลูกค้า"
                       aria-label="ล้างลูกค้า"
                       className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
@@ -1722,15 +2898,22 @@ export default function PosLandingPages() {
                 </div>
               </div>
 
-              <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              <div className="min-h-0 flex-1 overflow-y-auto p-4 [@media(max-height:720px)]:p-3">
                 {cart.length ? (
                   <div className="space-y-3">
                     {cart.map((item) => {
                       const lineTotal = item.price * item.qty;
-                      const lineDiscount = item.allow_discount
-                        ? Math.min(Math.max(item.discount || 0, 0), lineTotal)
-                        : 0;
-                      const lineNetTotal = Math.max(lineTotal - lineDiscount, 0);
+                      const lineDiscount = Math.min(
+                        Math.max(
+                          Number(item.discount_amount ?? item.discount ?? 0) || 0,
+                          0,
+                        ),
+                        lineTotal,
+                      );
+                      const lineFinalPrice =
+                        Number(item.final_price ?? item.total_amount ?? lineTotal) ||
+                        lineTotal;
+                      const lineNetTotal = Math.max(lineFinalPrice, 0);
 
                       return (
                       <div
@@ -1855,8 +3038,8 @@ export default function PosLandingPages() {
                 )}
               </div>
 
-              <div className="border-t border-slate-100 p-4">
-                <div className="space-y-2 text-sm">
+              <div className="shrink-0 border-t border-slate-100 p-4 [@media(max-height:720px)]:p-3">
+                <div className="space-y-2 text-sm [@media(max-height:720px)]:space-y-1">
                   {isVatEnabled ? (
                     <>
                       <div className="flex justify-between text-slate-500">
@@ -1893,17 +3076,49 @@ export default function PosLandingPages() {
                       <span>-{formatBaht(discountAmount)}</span>
                     </div>
                   ) : null}
+                  {appliedPromotions.length > 0 ? (
+                    <div className="space-y-1 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                      {appliedPromotions.map((promotion) => (
+                        <div
+                          key={String(promotion.promotion_id)}
+                          className="flex justify-between gap-3"
+                        >
+                          <span className="truncate">
+                            {promotion.promotion_name}
+                          </span>
+                          <span className="shrink-0">
+                            -{formatBaht(Number(promotion.discount_amount) || 0)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {promotionError ? (
+                    <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                      {promotionError}
+                    </p>
+                  ) : null}
                   <div className="flex justify-between text-lg font-bold text-slate-900">
                     <span>รวมทั้งหมด</span>
-                    <span>{formatBaht(total)}</span>
+                    <span>{promotionLoading ? "..." : formatBaht(total)}</span>
                   </div>
                 </div>
 
                 <button
                   type="button"
-                  onClick={processPayment}
+                  onClick={openHoldBillModal}
                   disabled={!cart.length}
-                  className="mt-4 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#1d6fd8] font-bold text-white transition hover:bg-[#1557ad] disabled:cursor-not-allowed disabled:opacity-40"
+                  className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-amber-500 font-bold text-white transition hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-40 [@media(max-height:720px)]:mt-3 [@media(max-height:720px)]:h-10"
+                >
+                  <IconFolderOpen size={18} />
+                  พักบิล
+                </button>
+
+                  <button
+                    type="button"
+                  onClick={() => setCurrentPage("posPayment")}
+                    disabled={!cart.length}
+                  className="mt-2 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#1d6fd8] font-bold text-white transition hover:bg-[#1557ad] disabled:cursor-not-allowed disabled:opacity-40 [@media(max-height:720px)]:h-10"
                 >
                   <IconCreditCard size={18} />
                   ชำระเงิน
@@ -1912,6 +3127,12 @@ export default function PosLandingPages() {
             </aside>
           </main>
         )}
+
+        {posToast ? (
+          <div className="fixed bottom-5 right-5 z-[95] rounded-xl border border-emerald-200 bg-white px-4 py-3 text-sm font-semibold text-emerald-700 shadow-xl">
+            {posToast}
+          </div>
+        ) : null}
 
         {scanMessage && !pendingScanInput ? (
           <div className="fixed bottom-5 right-5 z-[95] flex max-w-md items-start gap-3 rounded-xl border border-red-200 bg-white px-4 py-3 shadow-xl">
@@ -1924,6 +3145,194 @@ export default function PosLandingPages() {
             >
               <IconX size={16} />
             </button>
+          </div>
+        ) : null}
+
+        {showHeldBillsModal ? (
+          <div
+            className="fixed inset-0 z-[100] grid place-items-center bg-black/50 p-4"
+            onClick={closeHeldBillsModal}
+          >
+            <div
+              className="flex max-h-[82vh] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-2xl"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="held-bills-title"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 border-b border-slate-100 p-5">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-50 text-amber-700">
+                    <IconFolderOpen size={20} />
+                  </div>
+                  <div>
+                    <h3 id="held-bills-title" className="text-xl font-bold text-slate-900">
+                      เปิดบิลที่พัก
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      เลือกบิลพักเพื่อแทนที่รายการในตะกร้าปัจจุบัน
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeHeldBillsModal}
+                  className="text-slate-400 hover:text-slate-700"
+                  aria-label="ปิด"
+                >
+                  <IconX size={20} />
+                </button>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto p-5">
+                {heldBillsError ? (
+                  <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    {heldBillsError}
+                  </div>
+                ) : null}
+
+                {isLoadingHeldBills ? (
+                  <div className="grid min-h-40 place-items-center text-sm font-medium text-slate-500">
+                    กำลังโหลดบิลพัก...
+                  </div>
+                ) : heldBills.length ? (
+                  <div className="space-y-3">
+                    {heldBills.map((bill) => {
+                      const isOpening = openingHeldBillId === bill.id;
+
+                      return (
+                        <button
+                          key={String(bill.id)}
+                          type="button"
+                          onClick={() => void openHeldBill(bill)}
+                          disabled={openingHeldBillId !== null}
+                          className="w-full rounded-xl border border-slate-200 p-4 text-left transition hover:border-amber-300 hover:bg-amber-50/60 disabled:cursor-wait disabled:opacity-60"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate font-bold text-slate-900">
+                                {bill.hold_name || "บิลพัก"}
+                              </p>
+                              <p className="mt-1 text-xs text-slate-500">
+                                {bill.hold_no || "-"} · {formatHeldBillDate(bill.created_at)}
+                              </p>
+                            </div>
+                            <div className="text-right">
+                              <p className="font-bold text-slate-900">
+                                {formatBaht(Number(bill.total_amount) || 0)}
+                              </p>
+                              <p className="mt-1 text-xs text-slate-500">
+                                {Number(bill.item_count) || 0} รายการ / {Number(bill.total_qty) || 0} ชิ้น
+                              </p>
+                            </div>
+                          </div>
+                          {isOpening ? (
+                            <p className="mt-2 text-sm font-semibold text-amber-700">
+                              กำลังเปิดบิล...
+                            </p>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="grid min-h-40 place-items-center rounded-xl border border-dashed border-slate-200 text-center text-sm text-slate-400">
+                    ยังไม่มีบิลพัก
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-3 border-t border-slate-100 p-5">
+                <button
+                  type="button"
+                  onClick={() => void fetchHeldBillList()}
+                  disabled={isLoadingHeldBills || openingHeldBillId !== null}
+                  className="h-11 flex-1 rounded-xl border border-slate-200 font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  โหลดใหม่
+                </button>
+                <button
+                  type="button"
+                  onClick={closeHeldBillsModal}
+                  className="h-11 flex-1 rounded-xl bg-slate-900 font-semibold text-white hover:bg-slate-800"
+                >
+                  ปิด
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {showHoldBillModal ? (
+          <div
+            className="fixed inset-0 z-[100] grid place-items-center bg-black/50 p-4"
+            onClick={closeHoldBillModal}
+          >
+            <form
+              className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl"
+              onClick={(event) => event.stopPropagation()}
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submitHoldBill();
+              }}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-50 text-amber-700">
+                    <IconFolderOpen size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-slate-900">พักบิล</h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      ตั้งชื่อเพื่อจำบิลนี้ได้ง่ายขึ้น
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeHoldBillModal}
+                  className="text-slate-400 hover:text-slate-700"
+                  aria-label="ปิด"
+                >
+                  <IconX size={20} />
+                </button>
+              </div>
+
+              <label className="mt-5 block text-sm font-medium text-slate-700">
+                ชื่อบิลพัก
+              </label>
+              <input
+                ref={holdBillNameRef}
+                value={holdBillName}
+                onChange={(event) => setHoldBillName(event.target.value)}
+                placeholder="ลูกค้ารอโอน, โต๊ะ 3"
+                className="mt-2 h-12 w-full rounded-xl border border-slate-200 px-4 text-lg font-semibold text-slate-900 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+              />
+
+              {holdBillError ? (
+                <p className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {holdBillError}
+                </p>
+              ) : null}
+
+              <div className="mt-5 flex gap-3">
+                <button
+                  type="button"
+                  onClick={closeHoldBillModal}
+                  disabled={isHoldingBill}
+                  className="h-11 flex-1 rounded-xl border border-slate-200 font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="submit"
+                  disabled={isHoldingBill || !cart.length}
+                  className="h-11 flex-1 rounded-xl bg-amber-500 font-semibold text-white hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isHoldingBill ? "กำลังพักบิล..." : "ยืนยัน"}
+                </button>
+              </div>
+            </form>
           </div>
         ) : null}
 
@@ -2226,6 +3635,9 @@ export default function PosLandingPages() {
             <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl">
               <h3 className="text-lg font-bold text-slate-900">คีย์ลัด</h3>
               <div className="mt-3 space-y-2 text-sm text-slate-600">
+                <p>
+                  <span className="font-bold text-slate-900">F2</span> เปิดรายการพักบิล / พักบิล
+                </p>
                 <p>
                   <span className="font-bold text-slate-900">F3</span> เลือกลูกค้า
                 </p>

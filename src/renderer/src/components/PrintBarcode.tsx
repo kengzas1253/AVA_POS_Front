@@ -47,6 +47,17 @@ interface ApiProduct {
   [key: string]: unknown;
 }
 
+interface ProductsResponse {
+  data: ApiProduct[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+    hasMore: boolean;
+  };
+}
+
 interface Product {
   id: string;
   name: string;
@@ -142,6 +153,27 @@ const unwrapObject = <T,>(payload: unknown): T | null => {
   return (value.data || value.setting || value.barcode_print_setting || value) as T;
 };
 
+const unwrapProductsResponse = (payload: unknown): ProductsResponse => {
+  if (!payload || typeof payload !== "object") {
+    return {
+      data: [],
+      pagination: { page: 1, limit: 50, total: 0, totalPages: 0, hasMore: false },
+    };
+  }
+
+  const value = payload as Partial<ProductsResponse>;
+  return {
+    data: Array.isArray(value.data) ? value.data : [],
+    pagination: {
+      page: Number(value.pagination?.page ?? 1),
+      limit: Number(value.pagination?.limit ?? 50),
+      total: Number(value.pagination?.total ?? 0),
+      totalPages: Number(value.pagination?.totalPages ?? 0),
+      hasMore: Boolean(value.pagination?.hasMore),
+    },
+  };
+};
+
 const getApiErrorMessage = async (response: Response, fallback: string): Promise<string> => {
   try {
     const data = (await response.json()) as { message?: string | string[]; error?: string };
@@ -214,6 +246,23 @@ const mapProduct = (product: ApiProduct, index: number): Product | null => {
     price: toNumber(product.sale_price ?? product.price),
     stock: toNumber(product.stock_qty ?? product.stock) ?? undefined,
   };
+};
+
+const buildProductsPath = (page: number, limit: number, search: string) => {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+  });
+  const keyword = search.trim();
+  if (keyword) params.set("search", keyword);
+  return `/products?${params.toString()}`;
+};
+
+const mergeUniqueProducts = (currentProducts: Product[], nextProducts: Product[]) => {
+  const byId = new Map<string, Product>();
+  currentProducts.forEach((product) => byId.set(product.id, product));
+  nextProducts.forEach((product) => byId.set(product.id, product));
+  return Array.from(byId.values());
 };
 
 const normalizePaperSize = (value?: string): PaperSize => {
@@ -653,13 +702,20 @@ function SettingsModal({
 
 export default function PrintBarcode() {
   const previewRef = useRef<HTMLDivElement | null>(null);
-  const [query, setQuery] = useState("");
+  const productListRef = useRef<HTMLDivElement | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
+  const [page, setPage] = useState(1);
+  const [limit] = useState(50);
+  const [hasMore, setHasMore] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [printers, setPrinters] = useState<PrinterDriver[]>([]);
   const [machineId, setMachineId] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [cart, setCart] = useState<Record<string, number>>({});
+  const [cartProducts, setCartProducts] = useState<Record<string, Product>>({});
   const [settings, setSettings] = useState<PrintSettings>({
     printerName: DEFAULT_PRINTER,
     barcodeType: "barcode",
@@ -672,32 +728,22 @@ export default function PrintBarcode() {
   const [isWorking, setIsWorking] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const productsLoadingRef = useRef(false);
 
   const printList = useMemo(
     () =>
       Object.entries(cart)
         .filter(([, qty]) => qty > 0)
         .map(([id, qty]) => {
-          const product = products.find((item) => item.id === id);
+          const product = cartProducts[id] ?? products.find((item) => item.id === id);
           return product ? { ...product, qty } : null;
         })
         .filter((item): item is PrintItem => Boolean(item)),
-    [cart, products],
+    [cart, cartProducts, products],
   );
 
   const expandedPrintItems = useMemo(() => expandItems(printList), [printList]);
   const totalLabels = expandedPrintItems.length;
-
-  const filteredProducts = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return products;
-    return products.filter(
-      (product) =>
-        product.name.toLowerCase().includes(q) ||
-        product.barcode.toLowerCase().includes(q) ||
-        (product.sku || "").toLowerCase().includes(q),
-    );
-  }, [products, query]);
 
   const selectedPaper = getPaper(settings.paperSize);
   const effectiveCopiesPerRow = normalizeCopiesPerRow(settings.barcodeType, settings.copiesPerRow);
@@ -737,10 +783,68 @@ export default function PrintBarcode() {
     });
   }, []);
 
+  const loadProducts = useCallback(
+    async ({
+      pageToLoad,
+      searchKeyword,
+      reset,
+    }: {
+      pageToLoad: number;
+      searchKeyword: string;
+      reset: boolean;
+    }) => {
+      if (productsLoadingRef.current) return;
+
+      productsLoadingRef.current = true;
+      setLoading(true);
+      setError(null);
+
+      try {
+        const productsResponse = await authorizedFetch(
+          buildProductsPath(pageToLoad, limit, searchKeyword),
+          { signal: AbortSignal.timeout(15000) },
+        );
+        if (!productsResponse.ok) {
+          throw new Error(
+            await getApiErrorMessage(
+              productsResponse,
+              `โหลดสินค้าไม่สำเร็จ (${productsResponse.status})`,
+            ),
+          );
+        }
+
+        const payload = unwrapProductsResponse(
+          await productsResponse.json().catch(() => null),
+        );
+        const mappedProducts = payload.data
+          .map((product, index) => mapProduct(product, (pageToLoad - 1) * limit + index))
+          .filter((product): product is Product => Boolean(product));
+
+        setProducts((currentProducts) =>
+          reset ? mappedProducts : mergeUniqueProducts(currentProducts, mappedProducts),
+        );
+        setPage(payload.pagination.page || pageToLoad);
+        setHasMore(payload.pagination.hasMore);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "ไม่สามารถโหลดสินค้าได้");
+      } finally {
+        productsLoadingRef.current = false;
+        setLoading(false);
+        setIsLoading(false);
+      }
+    },
+    [limit],
+  );
+
   const loadPageData = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     setMessage(null);
+    setProducts([]);
+    setPage(1);
+    setHasMore(true);
+    setSearch("");
+    setDebouncedSearch("");
 
     try {
       const [storedDevice, loadedPrinters] = await Promise.all([
@@ -752,37 +856,62 @@ export default function PrintBarcode() {
 
       const device = getStoredDevice(storedDevice);
       if (!device?.machine_id) {
-        throw new Error("ไม่พบ machine_id กรุณาลงทะเบียนเครื่อง POS ก่อน");
+        throw new Error("Missing machine_id. Please register this POS device first.");
       }
       setMachineId(device.machine_id);
 
-      const productsResponse = await authorizedFetch("/products", {
-        signal: AbortSignal.timeout(15000),
-      });
-      if (!productsResponse.ok) {
-        throw new Error(await getApiErrorMessage(productsResponse, `โหลดสินค้าไม่สำเร็จ (${productsResponse.status})`));
-      }
-
-      const productRows = unwrapArray<ApiProduct>(await productsResponse.json().catch(() => []));
-      const mappedProducts = productRows
-        .map((product, index) => mapProduct(product, index))
-        .filter((product): product is Product => Boolean(product));
-
-      setProducts(mappedProducts);
       await loadBarcodeSetting(device.machine_id);
+      await loadProducts({ pageToLoad: 1, searchKeyword: "", reset: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "โหลดข้อมูลหน้า barcode ไม่สำเร็จ");
-    } finally {
+      setError(err instanceof Error ? err.message : "Failed to load barcode page data.");
       setIsLoading(false);
+    } finally {
+      if (!productsLoadingRef.current) setIsLoading(false);
     }
-  }, [loadBarcodeSetting]);
+  }, [loadBarcodeSetting, loadProducts]);
 
   useEffect(() => {
     void loadPageData();
   }, [loadPageData]);
 
-  const addToCart = useCallback((id: string) => {
-    setCart((current) => ({ ...current, [id]: (current[id] ?? 0) + 1 }));
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedSearch(search.trim());
+    }, 400);
+    return () => window.clearTimeout(timeoutId);
+  }, [search]);
+
+  useEffect(() => {
+    if (isLoading) return;
+
+    setProducts([]);
+    setPage(1);
+    setHasMore(true);
+    void loadProducts({
+      pageToLoad: 1,
+      searchKeyword: debouncedSearch,
+      reset: true,
+    });
+  }, [debouncedSearch, loadProducts]);
+
+  const handleProductsScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const element = event.currentTarget;
+    const distanceFromBottom =
+      element.scrollHeight - element.scrollTop - element.clientHeight;
+    if (distanceFromBottom > 240 || loading || !hasMore) return;
+    void loadProducts({
+      pageToLoad: page + 1,
+      searchKeyword: debouncedSearch,
+      reset: false,
+    });
+  };
+
+  const addToCart = useCallback((product: Product) => {
+    setCartProducts((current) => ({ ...current, [product.id]: product }));
+    setCart((current) => ({
+      ...current,
+      [product.id]: (current[product.id] ?? 0) + 1,
+    }));
   }, []);
 
   const setQty = useCallback((id: string, qty: number) => {
@@ -950,7 +1079,7 @@ export default function PrintBarcode() {
   };
 
   return (
-    <div className="flex h-full flex-col bg-slate-50 px-6 py-6">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-slate-50 px-6 py-6">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">พิมพ์บาร์โค้ดสินค้า</h1>
@@ -1015,8 +1144,8 @@ export default function PrintBarcode() {
           />
           <input
             type="text"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
             placeholder="ค้นหาสินค้าด้วยชื่อ, SKU หรือบาร์โค้ด"
             className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
           />
@@ -1031,20 +1160,25 @@ export default function PrintBarcode() {
         </button>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
-        <div className="min-h-0 overflow-y-auto rounded-2xl bg-white p-4 shadow-sm">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden xl:grid-cols-[minmax(0,1fr)_420px]">
+        <div
+          ref={productListRef}
+          className="min-h-0 overflow-y-auto rounded-2xl bg-white p-4 shadow-sm"
+          onScroll={handleProductsScroll}
+        >
           {isLoading ? (
             <div className="flex h-40 items-center justify-center text-sm text-slate-500">
               กำลังโหลดสินค้า...
             </div>
-          ) : filteredProducts.length === 0 ? (
+          ) : products.length === 0 ? (
             <div className="flex h-40 flex-col items-center justify-center gap-2 text-center text-slate-400">
               <Search size={32} className="text-slate-300" />
               <p className="text-sm">ไม่พบสินค้า</p>
             </div>
           ) : (
-            <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {filteredProducts.map((product) => {
+            <>
+              <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {products.map((product) => {
                 const inCart = cart[product.id] ?? 0;
                 return (
                   <li
@@ -1080,7 +1214,7 @@ export default function PrintBarcode() {
                       {inCart === 0 ? (
                         <button
                           type="button"
-                          onClick={() => addToCart(product.id)}
+                          onClick={() => addToCart(product)}
                           className="flex items-center gap-1.5 rounded-xl bg-[#1d6fd8] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#1a5fc0]"
                         >
                           <Plus size={16} />
@@ -1109,7 +1243,18 @@ export default function PrintBarcode() {
                   </li>
                 );
               })}
-            </ul>
+              </ul>
+              {loading ? (
+                <p className="py-4 text-center text-sm text-slate-400">
+                  &#3585;&#3635;&#3621;&#3633;&#3591;&#3650;&#3627;&#3621;&#3604;&#3626;&#3636;&#3609;&#3588;&#3657;&#3634;...
+                </p>
+              ) : null}
+              {!loading && products.length > 0 && !hasMore ? (
+                <p className="py-4 text-center text-sm text-slate-400">
+                  &#3649;&#3626;&#3604;&#3591;&#3626;&#3636;&#3609;&#3588;&#3657;&#3634;&#3607;&#3633;&#3657;&#3591;&#3627;&#3617;&#3604;&#3649;&#3621;&#3657;&#3623;
+                </p>
+              ) : null}
+            </>
           )}
         </div>
 

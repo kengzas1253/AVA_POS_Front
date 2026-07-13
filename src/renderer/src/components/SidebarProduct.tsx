@@ -1,9 +1,9 @@
 import {
   IconCategory,
   IconArrowBackUp,
+  IconBuildingStore,
   IconChevronLeft,
   IconChevronRight,
-  IconDeviceLaptop,
   IconPackage,
   IconBarcode,
   IconFileInvoice, // เพิ่มไอคอนสำหรับใบเสนอราคา
@@ -18,6 +18,7 @@ interface SidebarProductProps {
   onNavigate: (page: string) => void;
   currentPage: string;
   onSwitchSidebar?: () => void;
+  storeName?: string;
 }
 
 export default function SidebarProduct({
@@ -26,6 +27,7 @@ export default function SidebarProduct({
   onNavigate,
   currentPage,
   onSwitchSidebar,
+  storeName = "AVA MY POS",
 }: SidebarProductProps) {
   const menuItems = [
     { id: "productList", label: "รายการสินค้า", icon: IconPackage, title: "รายการสินค้า" },
@@ -74,11 +76,14 @@ export default function SidebarProduct({
         >
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/20">
-              <IconDeviceLaptop size={22} className="text-white" />
+              <IconBuildingStore size={22} className="text-white" />
             </div>
             {isOpen ? (
-              <span className="text-lg font-bold tracking-tight text-white">
-                AVA MY POS
+              <span
+                className="truncate text-lg font-bold tracking-tight text-white"
+                title={storeName}
+              >
+                {storeName}
               </span>
             ) : null}
           </div>

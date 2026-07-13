@@ -32,7 +32,6 @@ export function LoginPin({ onBack, onLoginSuccess }: LoginPinProps) {
       if (currentPin.length >= 6) {
         return currentPin;
       }
-
       return `${currentPin}${value}`;
     });
   };
@@ -52,8 +51,8 @@ export function LoginPin({ onBack, onLoginSuccess }: LoginPinProps) {
       return;
     }
 
-    if (pin.length < 4) {
-      setMessage("กรุณากรอก PIN อย่างน้อย 4 หลัก");
+    if (pin.length < 6) {
+      setMessage("กรุณากรอก PIN ให้ครบ 6 หลัก");
       return;
     }
 
@@ -96,7 +95,6 @@ export function LoginPin({ onBack, onLoginSuccess }: LoginPinProps) {
         }
 
         await saveAuthTokens(data);
-
         onLoginSuccess();
         return;
       }
@@ -134,6 +132,13 @@ export function LoginPin({ onBack, onLoginSuccess }: LoginPinProps) {
 
     addNumber(value);
   };
+
+  // Auto submit when pin reaches 6 digits
+  useEffect(() => {
+    if (pin.length === 6 && !isLoading) {
+      submitPin();
+    }
+  }, [pin]);
 
   useEffect(() => {
     const handleKeyboardInput = (event: KeyboardEvent) => {
@@ -181,15 +186,6 @@ export function LoginPin({ onBack, onLoginSuccess }: LoginPinProps) {
   return (
     <main className="grid min-h-screen place-items-center bg-slate-950 px-6 py-10">
       <section className="w-full max-w-md rounded-xl border border-slate-800 bg-slate-900 p-8 shadow-2xl sm:p-10">
-        <button
-          type="button"
-          onClick={onBack}
-          className="mb-6 flex items-center gap-2 text-sm font-medium text-slate-400 transition hover:text-teal-300"
-        >
-          <span aria-hidden="true">←</span>
-          กลับไปเข้าสู่ระบบด้วยรหัสผ่าน
-        </button>
-
         <div className="mb-8 text-center">
           <img
             src={logoUrl}
@@ -238,20 +234,20 @@ export function LoginPin({ onBack, onLoginSuccess }: LoginPinProps) {
           ))}
         </div>
 
-        <button
-          type="button"
-          onClick={submitPin}
-          disabled={isLoading}
-          className="mt-6 h-12 w-full rounded-lg bg-teal-500 text-sm font-semibold text-white transition hover:bg-teal-400 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-slate-600"
-        >
-          {isLoading ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบ"}
-        </button>
-
         {message ? (
           <p className="mt-5 rounded-lg border border-teal-400/30 bg-teal-400/10 px-4 py-3 text-center text-sm font-medium text-teal-200">
             {message}
           </p>
         ) : null}
+
+        <button
+          type="button"
+          onClick={onBack}
+          className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-800 py-3 text-sm font-medium text-slate-300 transition hover:border-teal-400 hover:bg-slate-700 hover:text-white"
+        >
+          <span aria-hidden="true">←</span>
+          กลับไปเข้าสู่ระบบด้วยรหัสผ่าน
+        </button>
       </section>
     </main>
   );

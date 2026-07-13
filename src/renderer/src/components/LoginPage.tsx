@@ -1,5 +1,5 @@
 // LoginPage.tsx
-import { FormEvent, useState, useEffect, useCallback } from "react";
+import { FormEvent, ReactNode, useState, useEffect, useCallback } from "react";
 import { LoginPin } from "./LoginPin";
 import { ApiPathSetting } from "./ApiPathSetting";
 import logoUrl from "../assets/logo.png";
@@ -14,21 +14,6 @@ interface ApiStatus {
   message?: string;
   port?: number;
   timestamp?: string;
-}
-
-interface PosDevice {
-  id: number;
-  device_name: string;
-  machine_id: string;
-  hostname: string;
-  ip_address: string;
-  os_platform: string;
-  os_release: string;
-  app_version: string;
-  printer_name: string;
-  printer_type: string;
-  created_at: string;
-  updated_at: string;
 }
 
 // User data from login response
@@ -76,77 +61,51 @@ function BarcodeScannerIcon() {
   );
 }
 
-// ── API Status Indicator ────────────────────────────────────────────────────
+// ── API Status Indicator (compact icon-only) ────────────────────────────────
 function ApiStatusBadge({ status }: { status: ApiStatus }) {
   if (status.checking) {
     return (
-      <span className="flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] text-slate-400">
+      <span
+        title="กำลังเชื่อมต่อ…"
+        className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-slate-400"
+      >
         <svg className="animate-spin" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
           <path d="M21 12a9 9 0 1 1-6.219-8.56" />
         </svg>
-        กำลังเชื่อมต่อ…
       </span>
     );
   }
   if (status.connected) {
     return (
-      <span className="flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-400">
+      <span
+        title="เชื่อมต่อสำเร็จ"
+        className="flex h-6 w-6 items-center justify-center rounded-full border border-emerald-500/30 bg-emerald-500/10"
+      >
         <span className="relative flex h-2 w-2">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
           <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
         </span>
-        เชื่อมต่อสำเร็จ
       </span>
     );
   }
   return (
-    <span className="flex items-center gap-1.5 rounded-full border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-400">
+    <span
+      title="ไม่สามารถเชื่อมต่อได้"
+      className="flex h-6 w-6 items-center justify-center rounded-full border border-red-500/30 bg-red-500/10"
+    >
       <span className="h-2 w-2 rounded-full bg-red-500" />
-      ไม่สามารถเชื่อมต่อได้
     </span>
   );
 }
 
-// ── POS Device List ─────────────────────────────────────────────────────────
-function PosDeviceList({ devices, loading }: { devices: PosDevice[]; loading: boolean }) {
-  if (loading) {
-    return (
-      <div className="mt-3 space-y-2">
-        {[1, 2].map((i) => (
-          <div key={i} className="h-10 animate-pulse rounded-lg bg-white/[0.04]" />
-        ))}
-      </div>
-    );
-  }
-  if (!devices.length) {
-    return (
-      <p className="mt-3 rounded-lg border border-white/8 bg-white/[0.03] px-3 py-2.5 text-[11px] text-slate-500">
-        ยังไม่มีเครื่อง POS ที่ลงทะเบียน
-      </p>
-    );
-  }
+// ── Feature icon item ────────────────────────────────────────────────────────
+function FeatureItem({ icon, label }: { icon: ReactNode; label: string }) {
   return (
-    <div className="mt-3 space-y-1.5 max-h-44 overflow-y-auto pr-0.5">
-      {devices.map((d) => (
-        <div
-          key={d.id}
-          className="flex items-center gap-2.5 rounded-lg border border-white/8 bg-white/[0.04] px-3 py-2"
-        >
-          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-teal-500/15 text-[10px] font-bold text-teal-400">
-            {d.id}
-          </span>
-          <div className="flex-1 min-w-0">
-            <p className="truncate text-[12px] font-medium text-white">{d.device_name}</p>
-            <p className="text-[10px] text-slate-500">
-              {d.hostname} · {d.ip_address}
-              {d.printer_name ? ` · ${d.printer_name}` : ""}
-            </p>
-          </div>
-          <span className="shrink-0 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-400 uppercase tracking-wide">
-            Online
-          </span>
-        </div>
-      ))}
+    <div className="flex items-center gap-2.5 rounded-lg border border-white/8 bg-white/[0.04] px-3 py-2.5 [@media(max-height:820px)]:py-2">
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-teal-500/15 text-teal-400 [@media(max-height:820px)]:h-7 [@media(max-height:820px)]:w-7">
+        {icon}
+      </span>
+      <span className="text-[12px] font-medium text-slate-200">{label}</span>
     </div>
   );
 }
@@ -173,8 +132,6 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
   const [hasPosDevice, setHasPosDevice] = useState(false);
 
   const [apiStatus, setApiStatus] = useState<ApiStatus>({ connected: false, checking: true });
-  const [posDevices, setPosDevices] = useState<PosDevice[]>([]);
-  const [devicesLoading, setDevicesLoading] = useState(false);
 
   // ── Check if API Path and POS Device exist ───────────────────────────────
   const checkSettings = useCallback(async () => {
@@ -217,38 +174,44 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
     }
   }, []);
 
-  // ── Fetch POS devices ──────────────────────────────────────────────────────
-  const fetchDevices = useCallback(async () => {
-    try {
-      const stored = await window.electronStore.get(API_PATH_KEY);
-      if (!stored || typeof stored !== "string") return;
-      const base = stored.replace(/\/+$/, "");
-      setDevicesLoading(true);
-      const res = await fetch(`${base}/pos-devices`, {
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!res.ok) return;
-      const data: PosDevice[] = await res.json();
-      setPosDevices(data);
-    } catch {
-      // silently fail — status badge already shows error
-    } finally {
-      setDevicesLoading(false);
-    }
-  }, []);
-
   // initial + periodic polling
   useEffect(() => {
     checkSettings();
     checkApi();
-    fetchDevices();
     const id = setInterval(() => {
       checkSettings();
       checkApi();
-      fetchDevices();
     }, POLL_INTERVAL);
     return () => clearInterval(id);
-  }, [checkApi, fetchDevices, checkSettings]);
+  }, [checkApi, checkSettings]);
+
+  // ── Keyboard shortcut: F4 to open PIN login ─────────────────────────────
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // F4 key
+      if (event.key === "F4") {
+        event.preventDefault(); // Prevent default browser behavior
+        // Only allow switching if not already in PIN mode and not disabled
+        if (loginMode !== "pin" && !isLoading) {
+          setLoginMode("pin");
+        }
+      }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+
+        const shouldQuit = window.confirm("คุณต้องการปิดโปรแกรมหรือไม่?");
+        if (shouldQuit) {
+          void window.electronAPI.quitApp();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [loginMode, isLoading]);
 
   // ── Handle Login ──────────────────────────────────────────────────────────
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -341,39 +304,39 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
   if (loginMode === "apiSetting") return <ApiPathSetting onBack={() => setLoginMode("password")} />;
 
   return (
-    <main className="grid min-h-screen place-items-center bg-slate-950 px-6 py-10">
-      <section className="grid w-full max-w-5xl overflow-hidden rounded-xl border border-slate-800 bg-slate-900 shadow-2xl md:grid-cols-[1fr_400px]">
+    <main className="grid h-[100dvh] min-h-[100svh] place-items-center overflow-y-auto bg-slate-950 px-6 py-6 [@media(max-height:820px)]:py-2">
+      <section className="grid max-h-[calc(100dvh-3rem)] w-full max-w-5xl overflow-hidden rounded-xl border border-slate-800 bg-slate-900 shadow-2xl md:grid-cols-[minmax(0,1fr)_400px] [@media(max-height:820px)]:max-h-[calc(100dvh-1rem)]">
 
         {/* ── Left brand panel ── */}
-        <div className="hidden flex-col justify-between bg-[#0f172a] p-10 md:flex">
+        <div className="hidden min-h-0 flex-col justify-between overflow-y-auto bg-[#0f172a] p-10 md:flex [@media(max-height:820px)]:gap-5 [@media(max-height:820px)]:p-6">
 
           {/* Logo + brand */}
           <div className="flex items-center gap-2.5">
             <img
               src={logoUrl}
               alt="AVA POS logo"
-              className="h-12 w-12 rounded-full border-2 border-pink-300 bg-white object-cover shadow-lg shadow-pink-500/20"
+              className="h-12 w-12 rounded-full border-2 border-pink-300 bg-white object-cover shadow-lg shadow-pink-500/20 [@media(max-height:820px)]:h-9 [@media(max-height:820px)]:w-9"
             />
-            <span className="text-[37px] font-medium tracking-wide text-white">
+            <span className="text-[37px] font-medium tracking-wide text-white [@media(max-height:820px)]:text-[30px]">
               AVA <span className="text-teal-400">MY POS</span>
             </span>
           </div>
 
           {/* Headline */}
           <div>
-            <h1 className="mb-3 text-[30px] font-medium leading-snug text-white">
+            <h1 className="mb-3 text-[30px] font-medium leading-snug text-white [@media(max-height:820px)]:mb-2 [@media(max-height:820px)]:text-[25px]">
               Point of Sale<br />made simple.
             </h1>
-            <p className="text-[13px] leading-7 text-slate-400">
+            <p className="text-[13px] leading-7 text-slate-400 [@media(max-height:820px)]:leading-6">
               จัดการร้านค้า ออกบิล ติดตามยอดขาย<br />
               ทุกอย่างในที่เดียว ใช้งานง่ายทุกสาขา
             </p>
           </div>
 
-          {/* ── API Status section ── */}
-          <div className="rounded-xl border border-white/8 bg-white/[0.03] p-4">
-            {/* Header row */}
-            <div className="mb-3 flex items-center justify-between gap-3">
+          {/* ── Status + Features section ── */}
+          <div className="rounded-xl border border-white/8 bg-white/[0.03] p-4 [@media(max-height:820px)]:p-3">
+            {/* Header row — connection status shown as a small icon only */}
+            <div className="mb-3 flex items-center justify-between gap-3 [@media(max-height:820px)]:mb-2">
               <div className="flex items-center gap-2">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-500">
                   <circle cx="12" cy="12" r="10" />
@@ -387,40 +350,75 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
               <ApiStatusBadge status={apiStatus} />
             </div>
 
-            {/* Status detail */}
-            {apiStatus.connected && apiStatus.timestamp && (
-              <p className="mb-0 text-[10px] font-mono text-slate-600">
-                อัปเดตล่าสุด: {new Date(apiStatus.timestamp).toLocaleTimeString("th-TH")}
-              </p>
-            )}
+            {/* Status detail (only shown when there's something noteworthy to say) */}
             {!apiStatus.connected && !apiStatus.checking && (
-              <p className="mb-0 text-[11px] text-red-400/70">
+              <p className="mb-3 text-[11px] text-red-400/70">
                 {apiStatus.message ?? "ไม่สามารถเข้าถึง API server ได้ กรุณาตรวจสอบการตั้งค่า"}
               </p>
             )}
 
-            {/* POS Devices — only when connected */}
-            {apiStatus.connected && (
-              <>
-                <div className="my-3 border-t border-white/8" />
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                    เครื่อง POS
-                  </span>
-                  {posDevices.length > 0 && (
-                    <span className="rounded-full bg-teal-500/15 px-2 py-0.5 text-[10px] font-bold text-teal-400">
-                      {posDevices.length} เครื่อง
-                    </span>
-                  )}
-                </div>
-                <PosDeviceList devices={posDevices} loading={devicesLoading} />
-              </>
-            )}
+            <div className="my-3 border-t border-white/8 [@media(max-height:820px)]:my-2" />
+
+            {/* Feature highlights */}
+            <span className="mb-3 block text-[11px] font-semibold uppercase tracking-wider text-slate-500 [@media(max-height:820px)]:mb-2">
+              คุณสมบัติเด่น
+            </span>
+            <div className="grid grid-cols-2 gap-2">
+              <FeatureItem
+                label="ใช้งานง่าย"
+                icon={
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+                    <circle cx="12" cy="12" r="4" />
+                  </svg>
+                }
+              />
+              <FeatureItem
+                label="สร้างบาร์โค้ดได้"
+                icon={
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
+                    <path d="M3 4v16" />
+                    <path d="M7 4v16" />
+                    <path d="M10 4v16" strokeWidth="2.4" />
+                    <path d="M13 4v16" />
+                    <path d="M16 4v16" strokeWidth="2.4" />
+                    <path d="M19 4v16" />
+                    <path d="M21 4v16" strokeWidth="2.4" />
+                  </svg>
+                }
+              />
+              <FeatureItem
+                label="รองรับหลายเครื่อง"
+                icon={
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <rect x="2" y="4" width="14" height="10" rx="1.5" />
+                    <path d="M6 18h6" />
+                    <path d="M9 14v4" />
+                    <rect x="17" y="8" width="6" height="10" rx="1.2" />
+                    <path d="M19 20h2" />
+                  </svg>
+                }
+              />
+              <FeatureItem
+                label="ปลอดภัย"
+                icon={
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M12 2l8 3.5v5.5c0 5-3.4 8.7-8 10-4.6-1.3-8-5-8-10V5.5L12 2z" />
+                    <path d="M9.5 12l1.8 1.8L15 10" />
+                  </svg>
+                }
+              />
+            </div>
           </div>
         </div>
 
         {/* ── Right form panel ── */}
-        <div className="relative flex flex-col justify-center bg-white p-8 dark:bg-slate-900 sm:p-10">
+        <div className="relative flex min-h-0 flex-col justify-center overflow-y-auto bg-white p-8 dark:bg-slate-900 sm:p-10 [@media(max-height:820px)]:justify-start [@media(max-height:820px)]:p-6">
+
+          {/* Keyboard shortcut hint - F4
+          <div className="absolute left-4 top-4 hidden rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-medium text-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-500 md:block">
+            F4 → PIN
+          </div> */}
 
           {/* API Setting gear button */}
           <button
@@ -442,16 +440,16 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
           </div>
 
           {/* Header */}
-          <div className="mb-8 text-center">
+          <div className="mb-8 text-center [@media(max-height:820px)]:mb-4">
             <img
               src={logoUrl}
               alt="AVA POS logo"
-              className="mx-auto mb-5 h-28 w-28 rounded-full border-4 border-pink-100 bg-white object-cover shadow-xl shadow-pink-500/20"
+              className="mx-auto mb-5 h-28 w-28 rounded-full border-4 border-pink-100 bg-white object-cover shadow-xl shadow-pink-500/20 [@media(max-height:820px)]:mb-3 [@media(max-height:820px)]:h-16 [@media(max-height:820px)]:w-16"
             />
-            <p className="mb-2 text-[20px] font-medium uppercase tracking-widest text-teal-500">
+            <p className="mb-2 text-[20px] font-medium uppercase tracking-widest text-teal-500 [@media(max-height:820px)]:mb-1 [@media(max-height:820px)]:text-[17px]">
               AVA Point of Sale
             </p>
-            <h2 className="mb-1.5 text-[22px] font-medium text-slate-900 dark:text-white">
+            <h2 className="mb-1.5 text-[22px] font-medium text-slate-900 dark:text-white [@media(max-height:820px)]:text-[19px]">
               เข้าสู่ระบบ
             </h2>
             <p className="text-[13px] text-slate-500 dark:text-slate-400">
@@ -462,7 +460,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
           <form onSubmit={handleSubmit} noValidate>
 
             {/* Email */}
-            <label className="mb-4 block">
+            <label className="mb-4 block [@media(max-height:820px)]:mb-3">
               <span className="mb-1.5 block text-[13px] font-medium text-slate-600 dark:text-slate-300">
                 อีเมล / รหัสพนักงาน
               </span>
@@ -480,13 +478,13 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
                   placeholder="employee@ava.co.th"
                   required
                   disabled={isLoading}
-                  className="h-11 w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-4 text-sm text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-400/20 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
+                  className="h-11 w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-4 text-sm text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-400/20 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500 [@media(max-height:820px)]:h-10"
                 />
               </div>
             </label>
 
             {/* Password */}
-            <label className="mb-5 block">
+            <label className="mb-5 block [@media(max-height:820px)]:mb-3">
               <span className="mb-1.5 block text-[13px] font-medium text-slate-600 dark:text-slate-300">
                 รหัสผ่าน
               </span>
@@ -504,7 +502,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
                   placeholder="••••••••"
                   required
                   disabled={isLoading}
-                  className="h-11 w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-10 text-sm text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-400/20 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
+                  className="h-11 w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-10 text-sm text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-400/20 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500 [@media(max-height:820px)]:h-10"
                 />
                 <button
                   type="button"
@@ -530,7 +528,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
             </label>
 
             {/* Remember me + Forgot */}
-            <div className="mb-6 flex items-center justify-between gap-4">
+            <div className="mb-6 flex items-center justify-between gap-4 [@media(max-height:820px)]:mb-4">
               <label className="flex cursor-pointer items-center gap-2 text-[13px] text-slate-500 dark:text-slate-400">
                 <input
                   type="checkbox"
@@ -550,7 +548,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
             <button
               type="submit"
               disabled={isLoginDisabled}
-              className={`flex h-11 w-full items-center justify-center gap-2 rounded-lg text-sm font-medium text-white transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${
+              className={`flex h-11 w-full items-center justify-center gap-2 rounded-lg text-sm font-medium text-white transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 [@media(max-height:820px)]:h-10 ${
                 isLoginDisabled ? "bg-slate-400" : "bg-teal-500 hover:bg-teal-400"
               }`}
             >
@@ -574,7 +572,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
             </button>
 
             {/* Divider */}
-            <div className="my-5 flex items-center gap-3">
+            <div className="my-5 flex items-center gap-3 [@media(max-height:820px)]:my-3">
               <hr className="flex-1 border-slate-200 dark:border-slate-700" />
               <span className="text-xs text-slate-400">หรือ</span>
               <hr className="flex-1 border-slate-200 dark:border-slate-700" />
@@ -585,7 +583,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
               type="button"
               onClick={() => setLoginMode("pin")}
               disabled={isLoginDisabled}
-              className="flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-slate-50 text-sm text-slate-600 transition hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+              className="flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-slate-50 text-sm text-slate-600 transition hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 [@media(max-height:820px)]:h-10"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <rect x="2" y="3" width="20" height="18" rx="2" />
@@ -635,7 +633,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
             )}
           </form>
 
-          <p className="mt-6 text-center text-xs text-slate-400">
+          <p className="mt-6 text-center text-xs text-slate-400 [@media(max-height:820px)]:mt-4">
             ต้องการความช่วยเหลือ?{" "}
             <span className="text-teal-500">ติดต่อผู้ดูแลระบบ</span>
           </p>

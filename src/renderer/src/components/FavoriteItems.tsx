@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   IconBox,
   IconChevronDown,
@@ -53,6 +53,17 @@ interface FavoriteItemsProps {
 }
 
 type ListResponse<T> = T[] | { data?: T[] };
+
+interface PaginatedProductsResponse {
+  data: FavoriteProduct[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+    hasMore: boolean;
+  };
+}
 
 const getApiBaseUrl = async (): Promise<string> => {
   const apiPath = await window.electronStore.get("apiPath");
@@ -135,6 +146,32 @@ const readApiError = async (response: Response, fallback: string) => {
 const unwrapList = <T,>(payload: ListResponse<T>): T[] =>
   Array.isArray(payload) ? payload : payload.data ?? [];
 
+const buildProductsPath = (
+  page: number,
+  limit: number,
+  search: string,
+  categoryId: string,
+) => {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+  });
+  const trimmedSearch = search.trim();
+  if (trimmedSearch) params.set("search", trimmedSearch);
+  if (categoryId) params.set("category_id", categoryId);
+  return `/products?${params.toString()}`;
+};
+
+const mergeUniqueProducts = (
+  currentProducts: FavoriteProduct[],
+  nextProducts: FavoriteProduct[],
+) => {
+  const byId = new Map<string, FavoriteProduct>();
+  currentProducts.forEach((product) => byId.set(String(product.id), product));
+  nextProducts.forEach((product) => byId.set(String(product.id), product));
+  return Array.from(byId.values());
+};
+
 const getItemGroupId = (item: FavoriteItem) =>
   item.favorite_group_id ?? item.group_id ?? item.favorite_group?.id;
 
@@ -157,82 +194,151 @@ export function AllProducts({
   const [failedImageIds, setFailedImageIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const [isLoading, setIsLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [limit] = useState(50);
+  const [hasMore, setHasMore] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [selectedCategoryId, setSelectedCategoryId] = useState<string>("all");
+  const [categories, setCategories] = useState<ProductCategory[]>([]);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>("");
+  const loadingRef = useRef(false);
 
-  const fetchProducts = async () => {
-    setIsLoading(true);
-    setError(null);
-
+  const fetchCategories = async () => {
     try {
-      const response = await authorizedFetch("/products");
-      if (!response.ok) {
-        throw new Error(await readApiError(response, "โหลดสินค้าไม่สำเร็จ"));
-      }
-
-      const list = unwrapList(
-        (await response.json()) as ListResponse<FavoriteProduct>,
-      );
-      setProducts(list);
-
-      const entries = await Promise.all(
-        list.map(async (product) => [
-          String(product.id),
-          await resolveProductImageUrl(product.image_url),
-        ] as const),
-      );
-      const nextImageUrls: Record<string, string> = {};
-      entries.forEach(([productId, imageUrl]) => {
-        if (imageUrl) nextImageUrls[productId] = imageUrl;
-      });
-      setImageUrls(nextImageUrls);
-      setFailedImageIds(new Set());
+      const response = await authorizedFetch("/categories");
+      if (!response.ok) return;
+      const payload = (await response.json()) as ListResponse<ProductCategory>;
+      setCategories(unwrapList(payload));
     } catch (err) {
-      console.error("Error fetching all products:", err);
-      setError(
-        err instanceof Error ? err.message : "ไม่สามารถโหลดสินค้าได้",
-      );
-    } finally {
-      setIsLoading(false);
+      console.error("Error fetching product categories:", err);
     }
   };
 
+  const loadProducts = useCallback(
+    async ({
+      pageToLoad,
+      searchKeyword,
+      categoryId,
+      reset,
+    }: {
+      pageToLoad: number;
+      searchKeyword: string;
+      categoryId: string;
+      reset: boolean;
+    }) => {
+      if (loadingRef.current) return;
+
+      loadingRef.current = true;
+      setLoading(true);
+      setError(null);
+
+      try {
+        const response = await authorizedFetch(
+          buildProductsPath(pageToLoad, limit, searchKeyword, categoryId),
+        );
+        if (!response.ok) {
+          throw new Error(await readApiError(response, "โหลดสินค้าไม่สำเร็จ"));
+        }
+
+        const payload = (await response.json()) as PaginatedProductsResponse;
+        const list = Array.isArray(payload.data) ? payload.data : [];
+        setProducts((currentProducts) =>
+          reset ? list : mergeUniqueProducts(currentProducts, list),
+        );
+        setPage(payload.pagination?.page ?? pageToLoad);
+        setHasMore(Boolean(payload.pagination?.hasMore));
+
+        const entries = await Promise.all(
+          list.map(async (product) => [
+            String(product.id),
+            await resolveProductImageUrl(product.image_url),
+          ] as const),
+        );
+        const nextImageUrls: Record<string, string> = {};
+        entries.forEach(([productId, imageUrl]) => {
+          if (imageUrl) nextImageUrls[productId] = imageUrl;
+        });
+        setImageUrls((currentUrls) =>
+          reset ? nextImageUrls : { ...currentUrls, ...nextImageUrls },
+        );
+        if (reset) setFailedImageIds(new Set());
+      } catch (err) {
+        console.error("Error fetching all products:", err);
+        setError(
+          err instanceof Error ? err.message : "ไม่สามารถโหลดสินค้าได้",
+        );
+      } finally {
+        loadingRef.current = false;
+        setLoading(false);
+      }
+    },
+    [limit],
+  );
+
   useEffect(() => {
-    void fetchProducts();
+    void fetchCategories();
   }, []);
 
-  const categories = useMemo(() => {
-    const byId = new Map<string, ProductCategory>();
-    products.forEach((product) => {
-      if (!product.category) return;
-      byId.set(String(product.category.id), product.category);
+  useEffect(() => {
+    setSearch(searchQuery);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedSearch(search.trim());
+    }, 400);
+    return () => window.clearTimeout(timeoutId);
+  }, [search]);
+
+  useEffect(() => {
+    setProducts([]);
+    setImageUrls({});
+    setFailedImageIds(new Set());
+    setPage(1);
+    setHasMore(true);
+    void loadProducts({
+      pageToLoad: 1,
+      searchKeyword: debouncedSearch,
+      categoryId: selectedCategoryId,
+      reset: true,
     });
-    return Array.from(byId.values()).sort((a, b) => {
+  }, [debouncedSearch, loadProducts, selectedCategoryId]);
+
+  const handleProductsScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const element = event.currentTarget;
+    const distanceFromBottom =
+      element.scrollHeight - element.scrollTop - element.clientHeight;
+    if (distanceFromBottom > 240 || loading || !hasMore) return;
+    void loadProducts({
+      pageToLoad: page + 1,
+      searchKeyword: debouncedSearch,
+      categoryId: selectedCategoryId,
+      reset: false,
+    });
+  };
+
+  const sortedCategories = useMemo(() => {
+    return [...categories].sort((a, b) => {
       const sortDiff = (a.sort_order ?? 0) - (b.sort_order ?? 0);
       if (sortDiff !== 0) return sortDiff;
       return a.category_name.localeCompare(b.category_name, "th");
     });
-  }, [products]);
+  }, [categories]);
 
-  const filteredProducts = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
+  const handleSelectCategory = (categoryId: string) => {
+    setProducts([]);
+    setImageUrls({});
+    setFailedImageIds(new Set());
+    setPage(1);
+    setHasMore(true);
+    setSelectedCategoryId(categoryId);
+  };
 
-    return products.filter((product) => {
-      const matchesSearch =
-        !query ||
-        product.product_name.toLowerCase().includes(query) ||
-        product.sku?.toLowerCase().includes(query) ||
-        product.barcode?.toLowerCase().includes(query);
-      const matchesCategory =
-        selectedCategoryId === "all" ||
-        String(product.category_id ?? product.category?.id ?? "") ===
-          selectedCategoryId;
-      return matchesSearch && matchesCategory;
-    });
-  }, [products, searchQuery, selectedCategoryId]);
+  const filteredProducts = products;
 
-  if (isLoading) {
+  if (loading && products.length === 0) {
     return (
       <div className="grid flex-1 place-items-center text-sm text-slate-400">
         กำลังโหลดสินค้า...
@@ -247,7 +353,14 @@ export function AllProducts({
           <p className="text-sm text-red-500">{error}</p>
           <button
             type="button"
-            onClick={() => void fetchProducts()}
+            onClick={() =>
+              void loadProducts({
+                pageToLoad: 1,
+                searchKeyword: debouncedSearch,
+                categoryId: selectedCategoryId,
+                reset: true,
+              })
+            }
             className="mx-auto mt-3 flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600"
           >
             <IconRefresh size={16} />
@@ -259,7 +372,7 @@ export function AllProducts({
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    <div className="min-h-0 flex-1 overflow-y-auto" onScroll={handleProductsScroll}>
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
           <h2 className="font-bold text-slate-900">สินค้าทั้งหมด</h2>
@@ -270,11 +383,11 @@ export function AllProducts({
         <div className="relative">
           <select
             value={selectedCategoryId}
-            onChange={(event) => setSelectedCategoryId(event.target.value)}
+            onChange={(event) => handleSelectCategory(event.target.value)}
             className="h-9 appearance-none rounded-lg border border-slate-200 bg-white pl-3 pr-9 text-sm text-slate-700 outline-none focus:border-[#1d6fd8]"
           >
-            <option value="all">ทุกประเภทสินค้า</option>
-            {categories.map((category) => (
+            <option value="">ทุกประเภทสินค้า</option>
+            {sortedCategories.map((category) => (
               <option key={category.id} value={String(category.id)}>
                 {category.category_name.trim().toLowerCase() === "general"
                   ? "สินค้าทั่วไป"
@@ -344,6 +457,16 @@ export function AllProducts({
           })}
         </div>
       )}
+      {loading && products.length > 0 ? (
+        <p className="py-4 text-center text-sm text-slate-400">
+          กำลังโหลดสินค้า...
+        </p>
+      ) : null}
+      {!loading && products.length > 0 && !hasMore ? (
+        <p className="py-4 text-center text-sm text-slate-400">
+          แสดงสินค้าทั้งหมดแล้ว
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -367,14 +490,19 @@ export default function FavoriteItems({
   const [error, setError] = useState<string | null>(null);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [products, setProducts] = useState<FavoriteProduct[]>([]);
-  const [isProductsLoading, setIsProductsLoading] = useState(false);
+  const [page, setPage] = useState(1);
+  const [limit] = useState(50);
+  const [hasMore, setHasMore] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [pickerError, setPickerError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedProductId, setSelectedProductId] = useState<string>("");
   const [editingItem, setEditingItem] = useState<FavoriteItem | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [deletingItem, setDeletingItem] = useState<FavoriteItem | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const productsLoadingRef = useRef(false);
 
   const fetchProductDetail = async (
     productId: number | string,
@@ -472,33 +600,66 @@ export default function FavoriteItems({
     };
   }, [productsById]);
 
+  const loadProducts = useCallback(
+    async ({
+      pageToLoad,
+      searchKeyword,
+      reset,
+    }: {
+      pageToLoad: number;
+      searchKeyword: string;
+      reset: boolean;
+    }) => {
+      if (productsLoadingRef.current) return;
+
+      productsLoadingRef.current = true;
+      setLoading(true);
+      setPickerError(null);
+
+      try {
+        const response = await authorizedFetch(
+          buildProductsPath(pageToLoad, limit, searchKeyword, ""),
+        );
+        if (!response.ok) {
+          throw new Error(await readApiError(response, "โหลดสินค้าไม่สำเร็จ"));
+        }
+
+        const payload = (await response.json()) as PaginatedProductsResponse;
+        const list = Array.isArray(payload.data) ? payload.data : [];
+        setProducts((currentProducts) =>
+          reset ? list : mergeUniqueProducts(currentProducts, list),
+        );
+        setPage(payload.pagination?.page ?? pageToLoad);
+        setHasMore(Boolean(payload.pagination?.hasMore));
+      } catch (err) {
+        console.error("Error fetching products:", err);
+        setPickerError(
+          err instanceof Error ? err.message : "ไม่สามารถโหลดสินค้าได้",
+        );
+      } finally {
+        productsLoadingRef.current = false;
+        setLoading(false);
+      }
+    },
+    [limit],
+  );
+
   const openProductPicker = async (item: FavoriteItem | null = null) => {
     setEditingItem(item);
     setSelectedProductId(item ? String(item.product_id) : "");
+    setProducts([]);
+    setPage(1);
+    setHasMore(true);
     setSearchQuery("");
+    setDebouncedSearch("");
     setPickerError(null);
     setIsPickerOpen(true);
-    setIsProductsLoading(true);
+
+    if (!item) return;
 
     try {
-      const [productsResponse, itemResponse] = await Promise.all([
-        authorizedFetch("/products"),
-        item
-          ? authorizedFetch(`/favorite-items/${item.id}`)
-          : Promise.resolve(null),
-      ]);
-      if (!productsResponse.ok) {
-        throw new Error(
-          await readApiError(productsResponse, "โหลดสินค้าไม่สำเร็จ"),
-        );
-      }
-      setProducts(
-        unwrapList(
-          (await productsResponse.json()) as ListResponse<FavoriteProduct>,
-        ),
-      );
-
-      if (itemResponse?.ok) {
+      const itemResponse = await authorizedFetch(`/favorite-items/${item.id}`);
+      if (itemResponse.ok) {
         const payload = (await itemResponse.json()) as
           | FavoriteItem
           | { data?: FavoriteItem };
@@ -512,12 +673,10 @@ export default function FavoriteItems({
         }
       }
     } catch (err) {
-      console.error("Error fetching products:", err);
+      console.error("Error fetching favorite item detail:", err);
       setPickerError(
-        err instanceof Error ? err.message : "ไม่สามารถโหลดสินค้าได้",
+        err instanceof Error ? err.message : "ไม่สามารถโหลดรายละเอียด Favorite ได้",
       );
-    } finally {
-      setIsProductsLoading(false);
     }
   };
 
@@ -526,6 +685,40 @@ export default function FavoriteItems({
     setIsPickerOpen(false);
     setEditingItem(null);
     setPickerError(null);
+  };
+
+  useEffect(() => {
+    if (!isPickerOpen) return;
+
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedSearch(searchQuery.trim());
+    }, 400);
+    return () => window.clearTimeout(timeoutId);
+  }, [isPickerOpen, searchQuery]);
+
+  useEffect(() => {
+    if (!isPickerOpen) return;
+
+    setProducts([]);
+    setPage(1);
+    setHasMore(true);
+    void loadProducts({
+      pageToLoad: 1,
+      searchKeyword: debouncedSearch,
+      reset: true,
+    });
+  }, [debouncedSearch, isPickerOpen, loadProducts]);
+
+  const handlePickerProductsScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const element = event.currentTarget;
+    const distanceFromBottom =
+      element.scrollHeight - element.scrollTop - element.clientHeight;
+    if (distanceFromBottom > 180 || loading || !hasMore) return;
+    void loadProducts({
+      pageToLoad: page + 1,
+      searchKeyword: debouncedSearch,
+      reset: false,
+    });
   };
 
   const saveFavoriteItem = async () => {
@@ -594,21 +787,15 @@ export default function FavoriteItems({
   };
 
   const filteredProducts = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
     return products.filter((product) => {
-      const matchesSearch =
-        !query ||
-        product.product_name.toLowerCase().includes(query) ||
-        product.sku?.toLowerCase().includes(query) ||
-        product.barcode?.toLowerCase().includes(query);
       const alreadyAdded = items.some(
         (item) =>
           String(item.product_id) === String(product.id) &&
           item.id !== editingItem?.id,
       );
-      return matchesSearch && !alreadyAdded;
+      return !alreadyAdded;
     });
-  }, [editingItem?.id, items, products, searchQuery]);
+  }, [editingItem?.id, items, products]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
@@ -755,33 +942,52 @@ export default function FavoriteItems({
                 className="h-10 w-full rounded-xl border border-slate-200 pl-9 pr-3 text-sm outline-none focus:border-[#1d6fd8]"
               />
             </div>
-            <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
-              {isProductsLoading ? (
+            <div
+              className="mt-3 min-h-0 flex-1 overflow-y-auto"
+              onScroll={handlePickerProductsScroll}
+            >
+              {loading && products.length === 0 ? (
                 <p className="py-10 text-center text-sm text-slate-400">
                   กำลังโหลดสินค้า...
                 </p>
+              ) : filteredProducts.length === 0 ? (
+                <p className="py-10 text-center text-sm text-slate-400">
+                  ไม่พบสินค้า
+                </p>
               ) : (
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {filteredProducts.map((product) => (
-                    <button
-                      key={product.id}
-                      type="button"
-                      onClick={() => setSelectedProductId(String(product.id))}
-                      className={`rounded-xl border p-3 text-left transition ${
-                        selectedProductId === String(product.id)
-                          ? "border-[#1d6fd8] bg-blue-50"
-                          : "border-slate-200 hover:bg-slate-50"
-                      }`}
-                    >
-                      <p className="truncate text-sm font-semibold text-slate-800">
-                        {product.product_name}
-                      </p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        {getProductPriceLabel(product)}
-                      </p>
-                    </button>
-                  ))}
-                </div>
+                <>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {filteredProducts.map((product) => (
+                      <button
+                        key={product.id}
+                        type="button"
+                        onClick={() => setSelectedProductId(String(product.id))}
+                        className={`rounded-xl border p-3 text-left transition ${
+                          selectedProductId === String(product.id)
+                            ? "border-[#1d6fd8] bg-blue-50"
+                            : "border-slate-200 hover:bg-slate-50"
+                        }`}
+                      >
+                        <p className="truncate text-sm font-semibold text-slate-800">
+                          {product.product_name}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {getProductPriceLabel(product)}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                  {loading ? (
+                    <p className="py-4 text-center text-sm text-slate-400">
+                      กำลังโหลดสินค้า...
+                    </p>
+                  ) : null}
+                  {!loading && products.length > 0 && !hasMore ? (
+                    <p className="py-4 text-center text-sm text-slate-400">
+                      แสดงสินค้าทั้งหมดแล้ว
+                    </p>
+                  ) : null}
+                </>
               )}
             </div>
             {pickerError ? (
@@ -842,3 +1048,4 @@ export default function FavoriteItems({
     </div>
   );
 }
+

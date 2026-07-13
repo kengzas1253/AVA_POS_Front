@@ -6,7 +6,6 @@ import {
   IconArrowBackUp,
   IconChevronLeft,
   IconChevronRight,
-  IconDeviceLaptop,
   IconUserPlus,
   IconUserCircle,
   IconBuildingStore,
@@ -20,6 +19,7 @@ interface SettingbarProps {
   onNavigate: (page: string) => void;
   currentPage: string;
   onSwitchSidebar?: () => void;
+  storeName?: string;
 }
 
 export default function Settingbar({
@@ -28,6 +28,7 @@ export default function Settingbar({
   onNavigate,
   currentPage,
   onSwitchSidebar,
+  storeName = "AVA MY POS",
 }: SettingbarProps) {
   const menuItems = [
     { id: "storeInfo", label: "ข้อมูลร้านค้า", icon: IconBuildingStore },
@@ -72,11 +73,14 @@ export default function Settingbar({
         >
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/20">
-              <IconDeviceLaptop size={22} className="text-white" />
+              <IconBuildingStore size={22} className="text-white" />
             </div>
             {isOpen ? (
-              <span className="text-lg font-bold tracking-tight text-white">
-                AVA MY POS
+              <span
+                className="truncate text-lg font-bold tracking-tight text-white"
+                title={storeName}
+              >
+                {storeName}
               </span>
             ) : null}
           </div>
