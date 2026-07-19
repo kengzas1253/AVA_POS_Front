@@ -4,6 +4,7 @@ import {
   IconCashBanknote,
   IconChevronLeft,
   IconChevronRight,
+  IconDeviceDesktop,
   IconPrinter,
   IconReceipt,
   IconSettings,
@@ -36,6 +37,7 @@ export default function Settingbar({
     { id: "payment", label: "ช่องทางชำระเงิน", icon: IconCashBanknote, title: "ช่องทางชำระเงิน" },
     { id: "receipt", label: "ใบเสร็จ", icon: IconReceipt, title: "ตั้งค่าใบเสร็จ" },
     { id: "printer", label: "เครื่องพิมพ์", icon: IconPrinter, title: "ตั้งค่าเครื่องพิมพ์" },
+    { id: "posSetting", label: "ตั้งค่าเครื่อง POS", icon: IconDeviceDesktop, title: "ตั้งค่าเครื่อง POS" },
     { id: "userInfo", label: "ข้อมูลผู้ใช้", icon: IconUserCog, title: "ข้อมูลผู้ใช้" },
     { id: "employees", label: "พนักงาน", icon: IconUsersGroup, title: "จัดการพนักงาน" },
   ];

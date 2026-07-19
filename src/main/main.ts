@@ -72,6 +72,9 @@ const createPrintWindow = async (html: string): Promise<BrowserWindow> => {
   });
 
   await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  await printWindow.webContents.executeJavaScript(
+    "document.fonts ? document.fonts.ready.then(() => true).catch(() => true) : true",
+  );
   return printWindow;
 };
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useCallback, useEffect, useState, useRef } from "react";
 import { authorizedFetch, type StoreData } from "./StoreSetting";
 import QRCode from "qrcode";
 import generatePayload from "promptpay-qr";
@@ -149,6 +149,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   const [activeTab, setActiveTab] = useState<"cash" | "transfer" | "gov">("cash");
   const [cashInput, setCashInput] = useState<string>(total.toFixed(2));
   const [popupChange, setPopupChange] = useState<number | null>(null);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
   const [storeData, setStoreData] = useState<StoreData | null>(null);
   const [storeError, setStoreError] = useState<string | null>(null);
   const [showSplitPopup, setShowSplitPopup] = useState(false);
@@ -163,6 +164,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   
   // ✅ Ref สำหรับ popup container
   const popupContainerRef = useRef<HTMLDivElement>(null);
+  const paymentErrorButtonRef = useRef<HTMLButtonElement>(null);
 
   // ✅ QR code state
   const [splitQrDataUrl, setSplitQrDataUrl] = useState<string | null>(null);
@@ -176,14 +178,25 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   const itemCount = cartItems.length;
   const totalQty = cartItems.reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
 
+  const focusCashInput = useCallback((delay = 50) => {
+    window.setTimeout(() => {
+      window.requestAnimationFrame(() => {
+        const input = cashInputRef.current;
+        if (!input) {
+          return;
+        }
+
+        input.focus({ preventScroll: true });
+        input.select();
+      });
+    }, delay);
+  }, []);
+
   // ---------- tab switch ----------
   const switchTab = (tab: "cash" | "transfer" | "gov") => {
     setActiveTab(tab);
     if (tab === "cash") {
-      setTimeout(() => {
-        cashInputRef.current?.focus();
-        cashInputRef.current?.select();
-      }, 50);
+      focusCashInput();
     }
   };
 
@@ -194,11 +207,17 @@ const POSPayment: React.FC<POSPaymentProps> = ({
 
   const closePopup = () => {
     setPopupChange(null);
-    setTimeout(() => {
-      cashInputRef.current?.focus();
-      cashInputRef.current?.select();
-    }, 100);
+    focusCashInput(100);
   };
+
+  const showPaymentError = useCallback((message: string) => {
+    setPaymentError(message);
+  }, []);
+
+  const closePaymentError = useCallback(() => {
+    setPaymentError(null);
+    focusCashInput(100);
+  }, [focusCashInput]);
 
   const confirmSuccessfulPayment = () => {
     closePopup();
@@ -209,19 +228,11 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   const processCashPayment = () => {
     const received = parseFloat(cashInput);
     if (isNaN(received) || received < 0) {
-      alert("กรุณากรอกจำนวนเงินที่ถูกต้อง");
-      setTimeout(() => {
-        cashInputRef.current?.focus();
-        cashInputRef.current?.select();
-      }, 50);
+      showPaymentError("กรุณากรอกจำนวนเงินที่ถูกต้อง");
       return;
     }
     if (received < total) {
-      alert("จำนวนเงินไม่พอชำระ (ยอดรวม " + total.toFixed(2) + " บาท)");
-      setTimeout(() => {
-        cashInputRef.current?.focus();
-        cashInputRef.current?.select();
-      }, 50);
+      showPaymentError("จำนวนเงินไม่พอชำระ (ยอดรวม " + total.toFixed(2) + " บาท)");
       return;
     }
     const change = received - total;
@@ -236,10 +247,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   // ---------- quick amount buttons ----------
   const handleQuickAmount = (amount: string) => {
     setCashInput(amount);
-    setTimeout(() => {
-      cashInputRef.current?.focus();
-      cashInputRef.current?.select();
-    }, 50);
+    focusCashInput();
     
     // ✅ คำนวณและแสดง popup ทันทีเมื่อคลิกปุ่ม quick cash
     const received = parseFloat(amount);
@@ -247,7 +255,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
       const change = received - total;
       showPopup(change);
     } else if (!isNaN(received) && received < total) {
-      alert("จำนวนเงินไม่พอชำระ (ยอดรวม " + total.toFixed(2) + " บาท)");
+      showPaymentError("จำนวนเงินไม่พอชำระ (ยอดรวม " + total.toFixed(2) + " บาท)");
     }
   };
 
@@ -259,10 +267,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
 
   const closeSplitPopup = () => {
     setShowSplitPopup(false);
-    setTimeout(() => {
-      cashInputRef.current?.focus();
-      cashInputRef.current?.select();
-    }, 100);
+    focusCashInput(100);
   };
 
   // ✅ Add new payment line
@@ -418,11 +423,8 @@ const POSPayment: React.FC<POSPaymentProps> = ({
 
   // ✅ โฟกัสที่ Input เงินสดอัตโนมัติเมื่อ component ถูก mount
   useEffect(() => {
-    setTimeout(() => {
-      cashInputRef.current?.focus();
-      cashInputRef.current?.select();
-    }, 150);
-  }, []);
+    focusCashInput(150);
+  }, [focusCashInput]);
 
   // ✅ เมื่อ popup เปิด ให้โฟกัสที่ container เพื่อรับ event keyboard
   useEffect(() => {
@@ -433,6 +435,14 @@ const POSPayment: React.FC<POSPaymentProps> = ({
     }
   }, [popupChange]);
 
+  useEffect(() => {
+    if (paymentError !== null) {
+      window.setTimeout(() => {
+        paymentErrorButtonRef.current?.focus();
+      }, 50);
+    }
+  }, [paymentError]);
+
   // ✅ Escape key handler
   useEffect(() => {
     const handleEscape = (event: KeyboardEvent) => {
@@ -441,6 +451,11 @@ const POSPayment: React.FC<POSPaymentProps> = ({
       }
 
       event.preventDefault();
+      if (paymentError !== null) {
+        closePaymentError();
+        return;
+      }
+
       onBack?.();
     };
 
@@ -448,7 +463,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
     return () => {
       window.removeEventListener("keydown", handleEscape);
     };
-  }, [onBack]);
+  }, [closePaymentError, onBack, paymentError]);
 
   const mixedCombined = calculateMixedTotal();
   const mixedRemaining = total - mixedCombined;
@@ -1250,6 +1265,92 @@ const POSPayment: React.FC<POSPaymentProps> = ({
             >
               ✓ ยืนยันการชำระเงินแบบผสม
             </button>
+          </div>
+        </div>
+      )}
+
+      {paymentError !== null && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === "Escape") {
+              e.preventDefault();
+              closePaymentError();
+            }
+          }}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="payment-error-title"
+            aria-describedby="payment-error-message"
+            style={{
+              background: "var(--white, #fff)",
+              border: "1px solid var(--gray-300, #d7dee8)",
+              borderRadius: 12,
+              boxShadow: "0 18px 50px rgba(0,0,0,0.25)",
+              width: "min(360px, calc(100vw - 32px))",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              id="payment-error-title"
+              style={{
+                padding: "10px 14px",
+                fontSize: 13,
+                color: "var(--ink, #0b1726)",
+                background: "var(--gray-100, #f3f4f6)",
+                borderBottom: "1px solid var(--gray-300, #d7dee8)",
+              }}
+            >
+              AVAPOS
+            </div>
+            <div
+              id="payment-error-message"
+              style={{
+                padding: "28px 16px",
+                fontSize: 13,
+                color: "var(--ink, #0b1726)",
+                lineHeight: 1.55,
+              }}
+            >
+              {paymentError}
+            </div>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                padding: "10px 12px",
+                background: "var(--gray-50, #f9fafb)",
+                borderTop: "1px solid var(--gray-200, #e5e7eb)",
+              }}
+            >
+              <button
+                ref={paymentErrorButtonRef}
+                type="button"
+                onClick={closePaymentError}
+                style={{
+                  minWidth: 72,
+                  border: "1px solid var(--blue-600, #1b4b8f)",
+                  borderRadius: 6,
+                  background: "var(--white, #fff)",
+                  color: "var(--ink, #0b1726)",
+                  padding: "5px 16px",
+                  fontSize: 13,
+                  cursor: "pointer",
+                }}
+              >
+                OK
+              </button>
+            </div>
           </div>
         </div>
       )}

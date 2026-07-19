@@ -29,6 +29,9 @@ import { normalizeBarcode, isLikelyBarcode } from "./BarcodeNormalizer";
 
 const SCANNER_KEY_INTERVAL_MS = 50;
 const SCANNER_MIN_FAST_KEYS = 3;
+const QUOTATION_PREVIEW_WIDTH = 794;
+const QUOTATION_PREVIEW_MIN_HEIGHT = 1123;
+const QUOTATION_PREVIEW_PADDING = 48;
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -601,6 +604,7 @@ function QuotationDocument({
 
 export default function QuotationPage() {
   const previewRef = useRef<HTMLDivElement | null>(null);
+  const previewPanelRef = useRef<HTMLDivElement | null>(null);
   const customerSearchContainerRef = useRef<HTMLDivElement | null>(null);
   const salespersonContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -608,6 +612,8 @@ export default function QuotationPage() {
   const [storeData, setStoreData] = useState<StoreSettingsData | null>(null);
   const [storeLoading, setStoreLoading] = useState(true);
   const [showOwnerName, setShowOwnerName] = useState(false);
+  const [previewScale, setPreviewScale] = useState(1);
+  const [previewHeight, setPreviewHeight] = useState(QUOTATION_PREVIEW_MIN_HEIGHT);
   const [isVatEnabled, setIsVatEnabled] = useState(true);
   const [vatRate, setVatRate] = useState(DEFAULT_VAT_RATE);
 
@@ -1111,6 +1117,30 @@ export default function QuotationPage() {
     }
   };
 
+  useEffect(() => {
+    const panel = previewPanelRef.current;
+    if (!panel) return;
+
+    const updatePreviewSize = () => {
+      const availableWidth = Math.max(0, panel.clientWidth - QUOTATION_PREVIEW_PADDING);
+      const nextScale = Math.min(1, availableWidth / QUOTATION_PREVIEW_WIDTH);
+      setPreviewScale(Number.isFinite(nextScale) && nextScale > 0 ? nextScale : 1);
+      setPreviewHeight(previewRef.current?.scrollHeight || QUOTATION_PREVIEW_MIN_HEIGHT);
+    };
+
+    updatePreviewSize();
+
+    const resizeObserver = new ResizeObserver(updatePreviewSize);
+    resizeObserver.observe(panel);
+    if (previewRef.current) {
+      resizeObserver.observe(previewRef.current);
+    }
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [storeData, items.length, notes, promptPayQrDataUrl, showOwnerName]);
+
   /* --- export / print --------------------------------------------------- */
 
   const requireReady = () => {
@@ -1138,6 +1168,7 @@ export default function QuotationPage() {
           box-sizing: border-box; 
           margin: 0;
           padding: 0;
+          font-family: "Sarabun", "Tahoma", Arial, sans-serif;
         }
         body { 
           margin: 0; 
@@ -1303,6 +1334,9 @@ export default function QuotationPage() {
         <head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=794">
+          <link rel="preconnect" href="https://fonts.googleapis.com">
+          <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+          <link href="https://fonts.googleapis.com/css2?family=Sarabun:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800&display=swap" rel="stylesheet">
           ${getPrintStyles()}
         </head>
         <body>
@@ -1860,9 +1894,22 @@ export default function QuotationPage() {
         </div>
 
         {/* --- Preview panel --- */}
-        <div className="min-h-0 overflow-auto rounded-2xl bg-slate-100 p-6">
+        <div ref={previewPanelRef} className="min-h-0 overflow-y-auto overflow-x-hidden rounded-2xl bg-slate-100 p-6">
           {storeData ? (
-            <div className="mx-auto w-fit shadow-lg">
+            <div
+              className="mx-auto"
+              style={{
+                width: QUOTATION_PREVIEW_WIDTH * previewScale,
+                minHeight: previewHeight * previewScale,
+              }}
+            >
+              <div
+                className="w-fit shadow-lg"
+                style={{
+                  transform: `scale(${previewScale})`,
+                  transformOrigin: "top left",
+                }}
+              >
               <div ref={previewRef}>
                 <QuotationDocument
                   storeData={storeData}
@@ -1885,6 +1932,7 @@ export default function QuotationPage() {
                   promptPayQrDataUrl={promptPayQrDataUrl}
                   showOwnerName={showOwnerName}
                 />
+              </div>
               </div>
             </div>
           ) : (

@@ -34,10 +34,13 @@ import ProductLandingpage from "./ProductLandingpage";
 import PromotionPage from "./PromotionPage";
 import PrintBarcode from "./PrintBarcode";
 import POSPayment from "./POSPayment";
+import DiscountPopup from "./DiscountPopup";
 import QuotationPage from "./QuotationPage";
 import PrinterSetting from "./PrinterSetting";
+import POSSettingPage from "./POSSettingPage";
 import SettingPages from "./SettingPages";
 import { RegisterPage } from "./RegisterPage";
+import { checkDiscount } from "./posDiscountService";
 import FavoriteGroups, {
   getFavoriteGroupIcon,
   getFavoriteGroupName,
@@ -301,6 +304,48 @@ const getStoredMachineId = (storedDevice: unknown): string | null => {
   return typeof machineId === "string" && machineId.trim()
     ? machineId.trim()
     : null;
+};
+
+const getStoredAllowBelowCost = (storedDevice: unknown): boolean => {
+  if (!storedDevice || typeof storedDevice !== "object") {
+    return false;
+  }
+
+  const device = storedDevice as {
+    allow_below_cost?: unknown;
+    allowBelowCost?: unknown;
+    pos_device?: {
+      allow_below_cost?: unknown;
+      allowBelowCost?: unknown;
+    };
+  };
+
+  const value =
+    device.allow_below_cost ??
+    device.allowBelowCost ??
+    device.pos_device?.allow_below_cost ??
+    device.pos_device?.allowBelowCost;
+
+  return value === true || value === "true";
+};
+
+const getDiscountErrorMessage = (message?: string): string => {
+  if (message === "This discount exceeds the allowed limit.") {
+    return "ส่วนลดนี้เกินวงเงินที่อนุญาต";
+  }
+
+  if (message === "Unable to validate the discount. Please try again.") {
+    return "ไม่สามารถตรวจสอบส่วนลดได้ กรุณาลองใหม่อีกครั้ง";
+  }
+
+  if (
+    message ===
+    "Unable to validate the discount because POS device information is missing."
+  ) {
+    return "ไม่สามารถตรวจสอบส่วนลดได้ เนื่องจากไม่พบข้อมูลเครื่อง POS";
+  }
+
+  return message || "ไม่สามารถตรวจสอบส่วนลดได้ กรุณาลองใหม่อีกครั้ง";
 };
 
 const scanProduct = async (barcode: string): Promise<ScanProductResponse> => {
@@ -906,6 +951,8 @@ export default function PosLandingPages() {
     string | null
   >(null);
   const [discountInputValue, setDiscountInputValue] = useState("");
+  const [discountPopupError, setDiscountPopupError] = useState<string | null>(null);
+  const [isCheckingDiscount, setIsCheckingDiscount] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<PosCustomer | null>(
     null,
   );
@@ -972,6 +1019,7 @@ export default function PosLandingPages() {
     "printer",
     "receipt",
     "payment",
+    "posSetting",
     "userInfo",
     "employees",
     "storeInfo",
@@ -1631,20 +1679,114 @@ export default function PosLandingPages() {
     setSelectedCartItemName(name);
     setDiscountPopupItemName(name);
     setDiscountInputValue(item.discount ? String(item.discount) : "");
+    setDiscountPopupError(null);
   };
 
   const closeDiscountPopup = () => {
-    setDiscountPopupItemName(null);
-    setDiscountInputValue("");
-  };
-
-  const confirmDiscountPopup = () => {
-    if (!discountPopupItemName) {
+    if (isCheckingDiscount) {
       return;
     }
 
-    changeItemDiscount(discountPopupItemName, Number(discountInputValue) || 0);
-    closeDiscountPopup();
+    setDiscountPopupItemName(null);
+    setDiscountInputValue("");
+    setDiscountPopupError(null);
+  };
+
+  const confirmDiscountPopup = async () => {
+    if (!discountPopupItemName || isCheckingDiscount) {
+      return;
+    }
+
+    setDiscountPopupError(null);
+
+    const discountAmount = Number(discountInputValue);
+    const currentItem = cart.find((item) => item.name === discountPopupItemName);
+    const lineTotal = currentItem ? currentItem.price * currentItem.qty : 0;
+
+    if (!currentItem) {
+      setDiscountPopupError("ไม่พบรายการสินค้าที่ต้องการให้ส่วนลด");
+      return;
+    }
+
+    if (!Number.isFinite(discountAmount)) {
+      setDiscountPopupError("กรุณากรอกส่วนลดเป็นตัวเลข");
+      return;
+    }
+
+    if (discountAmount < 0) {
+      setDiscountPopupError("ส่วนลดต้องไม่ติดลบ");
+      return;
+    }
+
+    if (discountAmount > lineTotal) {
+      setDiscountPopupError("ส่วนลดต้องไม่เกินยอดรวมรายการสินค้า");
+      return;
+    }
+
+    let storedDevice: unknown;
+    try {
+      storedDevice = await window.electronStore.get("pos_device");
+    } catch (error) {
+      console.error("Read POS device settings error:", error);
+      setDiscountPopupError(getDiscountErrorMessage());
+      return;
+    }
+
+    const allowBelowCost = getStoredAllowBelowCost(storedDevice);
+
+    if (allowBelowCost !== true) {
+      changeItemDiscount(discountPopupItemName, discountAmount);
+      closeDiscountPopup();
+      return;
+    }
+
+    const productId = currentItem.product_id ?? currentItem.id;
+    const machineId = getStoredMachineId(storedDevice);
+
+    if (
+      productId === undefined ||
+      productId === null ||
+      !String(productId).trim() ||
+      !machineId
+    ) {
+      setDiscountPopupError(
+        getDiscountErrorMessage(
+          "Unable to validate the discount because POS device information is missing.",
+        ),
+      );
+      return;
+    }
+
+    try {
+      setIsCheckingDiscount(true);
+      const response = await checkDiscount({
+        product_id: String(productId),
+        machine_id: machineId,
+        discount_amount: discountAmount,
+      });
+
+      if (!response.permitted) {
+        setDiscountPopupError(
+          getDiscountErrorMessage(
+            response.message || "This discount exceeds the allowed limit.",
+          ),
+        );
+        return;
+      }
+
+      changeItemDiscount(discountPopupItemName, discountAmount);
+      setDiscountPopupItemName(null);
+      setDiscountInputValue("");
+    } catch (error) {
+      console.error("Check discount error:", error);
+      setDiscountPopupError(
+        error instanceof Error && error.message
+          ? getDiscountErrorMessage(error.message)
+          : getDiscountErrorMessage(),
+      );
+    } finally {
+      setIsCheckingDiscount(false);
+    }
   };
 
   const fetchCustomerList = async () => {
@@ -2653,6 +2795,8 @@ export default function PosLandingPages() {
           <RegisterPage />
         ) : currentPage === "printer" ? (
           <PrinterSetting />
+        ) : currentPage === "posSetting" ? (
+          <POSSettingPage />
         ) : currentPage === "storeInfo" ||
           currentPage === "settings" ||
           currentPage === "tax" ||
@@ -2987,14 +3131,22 @@ export default function PosLandingPages() {
                                   event.stopPropagation();
                                   openDiscountPopup(item.name);
                                 }}
-                                title="ใส่ส่วนลดรายการนี้"
+                                title={
+                                  lineDiscount > 0
+                                    ? "แก้ไขส่วนลดรายการนี้"
+                                    : "ใส่ส่วนลดรายการนี้"
+                                }
                                 className={`transition ${
                                   lineDiscount > 0
                                     ? "text-[#1d6fd8] hover:text-[#1557ad]"
                                     : "text-slate-400 hover:text-[#1d6fd8]"
                                 }`}
                               >
-                                <IconDiscount size={18} />
+                                {lineDiscount > 0 ? (
+                                  <IconPencil size={18} />
+                                ) : (
+                                  <IconDiscount size={18} />
+                                )}
                               </button>
                             ) : null}
                             <button
@@ -3040,30 +3192,20 @@ export default function PosLandingPages() {
                           </p>
                         </div>
                         {item.allow_discount && lineDiscount > 0 ? (
-                          <div className="mt-3">
-                            <label className="block text-xs text-slate-500">
-                              <span className="mb-1 block">
-                                ส่วนลดรายการนี้ (บาท)
-                              </span>
-                              <input
-                                type="number"
-                                min="0"
-                                max={item.price * item.qty}
-                                step="0.01"
-                                inputMode="decimal"
-                                value={item.discount || ""}
-                                onClick={(event) => event.stopPropagation()}
-                                onChange={(event) => {
-                                  setSelectedCartItemName(item.name);
-                                  changeItemDiscount(
-                                    item.name,
-                                    Number(event.target.value) || 0,
-                                  );
-                                }}
-                                placeholder="0.00"
-                                className="h-9 w-full rounded-lg border border-[#1d6fd8] px-3 text-right text-sm font-semibold text-slate-800 outline-none transition focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
-                              />
-                            </label>
+                          <div className="mt-3 flex items-center justify-between rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                            <span>ส่วนลด {formatBaht(lineDiscount)}</span>
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openDiscountPopup(item.name);
+                              }}
+                              title="แก้ไขส่วนลดรายการนี้"
+                              aria-label="แก้ไขส่วนลดรายการนี้"
+                              className="flex h-7 w-7 items-center justify-center rounded-md text-emerald-700 transition hover:bg-emerald-100 hover:text-emerald-900"
+                            >
+                              <IconPencil size={16} />
+                            </button>
                           </div>
                         ) : null}
                       </div>
@@ -3597,78 +3739,18 @@ export default function PosLandingPages() {
           </div>
         ) : null}
 
-        {/* Discount Popup */}
         {discountPopupItemName && discountPopupItem ? (
-          <div className="fixed inset-0 z-[100] grid place-items-center bg-black/50 p-4">
-            <form
-              className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl"
-              onSubmit={(event) => {
-                event.preventDefault();
-                confirmDiscountPopup();
-              }}
-            >
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-50 text-[#1d6fd8]">
-                    <IconDiscount size={20} />
-                  </div>
-                  <div>
-                    <h3 className="text-xl font-bold text-slate-900">
-                      ใส่ส่วนลด
-                    </h3>
-                    <p className="mt-1 text-sm text-slate-500">
-                      {discountPopupItem.name}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={closeDiscountPopup}
-                  className="text-slate-400 hover:text-slate-700"
-                  aria-label="ปิด"
-                >
-                  <IconX size={20} />
-                </button>
-              </div>
-
-              <p className="mt-4 rounded-xl bg-blue-50 px-3 py-2 text-sm text-blue-700">
-                ยอดรวมรายการ{" "}
-                {formatBaht(discountPopupItem.price * discountPopupItem.qty)}
-              </p>
-
-              <label className="mt-4 block text-sm font-medium text-slate-700">
-                ส่วนลดรายการนี้ (บาท)
-              </label>
-              <input
-                ref={discountInputRef}
-                type="number"
-                min="0"
-                max={discountPopupItem.price * discountPopupItem.qty}
-                step="0.01"
-                inputMode="decimal"
-                value={discountInputValue}
-                onChange={(event) => setDiscountInputValue(event.target.value)}
-                placeholder="0.00"
-                className="mt-2 h-12 w-full rounded-xl border border-slate-200 px-4 text-lg font-semibold text-slate-900 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
-              />
-
-              <div className="mt-5 flex gap-3">
-                <button
-                  type="button"
-                  onClick={closeDiscountPopup}
-                  className="h-11 flex-1 rounded-xl border border-slate-200 font-semibold text-slate-700 hover:bg-slate-50"
-                >
-                  ยกเลิก
-                </button>
-                <button
-                  type="submit"
-                  className="h-11 flex-1 rounded-xl bg-[#1d6fd8] font-semibold text-white hover:bg-[#1557ad]"
-                >
-                  บันทึกส่วนลด
-                </button>
-              </div>
-            </form>
-          </div>
+          <DiscountPopup
+            item={discountPopupItem}
+            value={discountInputValue}
+            inputRef={discountInputRef}
+            formatBaht={formatBaht}
+            onChange={setDiscountInputValue}
+            onClose={closeDiscountPopup}
+            onConfirm={confirmDiscountPopup}
+            isLoading={isCheckingDiscount}
+            errorMessage={discountPopupError}
+          />
         ) : null}
 
         {/* Shortcuts Modal */}
