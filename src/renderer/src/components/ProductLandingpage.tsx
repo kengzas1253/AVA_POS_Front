@@ -36,6 +36,14 @@ interface Product {
   product_name: string;
   category_id: number | string;
   unit_code: string;
+  unit_id?: number | string | null;
+  unit?: {
+    id?: number | string;
+    unit_group_id?: number | string;
+    unit_code?: string;
+    unit_name_th?: string;
+    [key: string]: unknown;
+  } | null;
   price_mode: PriceMode;
   cost_price: number;
   sale_price: number;
@@ -57,6 +65,23 @@ interface PaginatedProductsResponse {
     totalPages: number;
     hasMore: boolean;
   };
+}
+
+interface Unit {
+  id: number | string;
+  unit_code: string;
+  unit_name_th: string;
+  unit_name_en?: string;
+  symbol?: string;
+  unit_group_id?: number | string;
+}
+
+interface UnitGroup {
+  id: number | string;
+  group_code: string;
+  group_name_th: string;
+  group_name_en?: string;
+  units: Unit[];
 }
 
 type PriceMode = "FIXED_PRICE" | "WEIGHT_PRICE" | "OPEN_PRICE" | "SERVICE_PRICE";
@@ -107,6 +132,7 @@ const EMPTY_FORM = {
   product_name: "",
   category_id: "",
   unit_code: "",
+  unit_id: "",
   price_mode: "FIXED_PRICE" as PriceMode,
   cost_price: "",
   sale_price: "",
@@ -259,6 +285,74 @@ const getApiErrorMessage = async (
   }
 };
 
+const unwrapUnitGroupsResponse = (payload: unknown): UnitGroup[] => {
+  if (Array.isArray(payload)) {
+    return payload as UnitGroup[];
+  }
+
+  if (payload && typeof payload === "object" && "data" in payload) {
+    const data = (payload as { data?: unknown }).data;
+    if (data && typeof data === "object" && "data" in data) {
+      const nestedData = (data as { data?: unknown }).data;
+      return Array.isArray(nestedData) ? (nestedData as UnitGroup[]) : [];
+    }
+    return Array.isArray(data) ? (data as UnitGroup[]) : [];
+  }
+
+  return [];
+};
+
+const unwrapProductResponse = (payload: unknown): Product | null => {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  if ("data" in payload) {
+    const data = (payload as { data?: unknown }).data;
+    if (data && typeof data === "object" && "data" in data) {
+      return ((data as { data?: Product }).data ?? null) as Product | null;
+    }
+    return (data ?? null) as Product | null;
+  }
+
+  return payload as Product;
+};
+
+const fetchUnitGroupsWithUnits = async (): Promise<UnitGroup[]> => {
+  const response = await authorizedFetch("/unit-groups/with-units");
+
+  if (!response.ok) {
+    const message = await getApiErrorMessage(
+      response,
+      `โหลดข้อมูลหน่วยไม่สำเร็จ (${response.status})`,
+    );
+    throw new Error(message);
+  }
+
+  return unwrapUnitGroupsResponse(await response.json().catch(() => []));
+};
+
+const findUnitByCode = (
+  groups: UnitGroup[],
+  unitCode?: string | null,
+): { unitGroup: UnitGroup; unit: Unit } | null => {
+  const code = unitCode?.trim();
+  if (!code) {
+    return null;
+  }
+
+  for (const unitGroup of groups) {
+    const unit = unitGroup.units.find(
+      (item) => item.unit_code.trim() === code,
+    );
+    if (unit) {
+      return { unitGroup, unit };
+    }
+  }
+
+  return null;
+};
+
 // แปลง image_url ที่ได้จาก API (เช่น "/images/xxx.jpg") ให้เป็น URL เต็มสำหรับแสดงผล <img>
 const resolveImageUrl = async (
   imageUrl?: string | null,
@@ -384,6 +478,12 @@ export default function ProductLandingpage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isScanningBarcode, setIsScanningBarcode] = useState(false);
+  const [unitGroups, setUnitGroups] = useState<UnitGroup[]>([]);
+  const [selectedUnitGroupId, setSelectedUnitGroupId] = useState("");
+  const [isLoadingUnitGroups, setIsLoadingUnitGroups] = useState(false);
+  const [unitGroupsError, setUnitGroupsError] = useState<string | null>(null);
+  const unitGroupsLoadingRef = useRef(false);
+  const unitGroupsRequestRef = useRef<Promise<UnitGroup[]> | null>(null);
 
   // รูปสินค้าที่เลือกใหม่ (ยังไม่อัปโหลด) + พรีวิวในฟอร์ม
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -406,6 +506,44 @@ export default function ProductLandingpage() {
   const [productPendingDelete, setProductPendingDelete] =
     useState<Product | null>(null);
   const loadingRef = useRef(false);
+
+  const loadUnitGroups = useCallback(async (): Promise<UnitGroup[]> => {
+    if (unitGroups.length > 0) {
+      return unitGroups;
+    }
+
+    if (unitGroupsRequestRef.current) {
+      return unitGroupsRequestRef.current;
+    }
+
+    unitGroupsLoadingRef.current = true;
+    setIsLoadingUnitGroups(true);
+    setUnitGroupsError(null);
+
+    const request = (async () => {
+      const groups = await fetchUnitGroupsWithUnits();
+      setUnitGroups(groups);
+      return groups;
+    })();
+
+    unitGroupsRequestRef.current = request;
+
+    try {
+      return await request;
+    } catch (err) {
+      console.error("Error fetching unit groups:", err);
+      setUnitGroupsError(
+        err instanceof Error
+          ? err.message
+          : "ไม่สามารถโหลดข้อมูลหน่วยได้ กรุณาลองใหม่อีกครั้ง",
+      );
+      return [];
+    } finally {
+      unitGroupsRequestRef.current = null;
+      unitGroupsLoadingRef.current = false;
+      setIsLoadingUnitGroups(false);
+    }
+  }, [unitGroups]);
 
   const fetchCategories = async () => {
     try {
@@ -576,6 +714,22 @@ export default function ProductLandingpage() {
     return map;
   }, [sortedCategories]);
 
+  const selectedUnitGroup = useMemo(
+    () =>
+      unitGroups.find(
+        (unitGroup) => String(unitGroup.id) === selectedUnitGroupId,
+      ) ?? null,
+    [selectedUnitGroupId, unitGroups],
+  );
+
+  const availableUnits = selectedUnitGroup?.units ?? [];
+
+  useEffect(() => {
+    if (isModalOpen) {
+      void loadUnitGroups();
+    }
+  }, [isModalOpen, loadUnitGroups]);
+
   const selectedCategoryLabel =
     selectedCategoryId === ""
       ? "สินค้าทั้งหมด"
@@ -623,45 +777,61 @@ export default function ProductLandingpage() {
       ...EMPTY_FORM,
       category_id: sortedCategories.length > 0 ? String(sortedCategories[0].id) : "",
     });
+    setSelectedUnitGroupId("");
     setSubmitError(null);
     setOriginalImageUrl(null);
     resetImageSelection();
     setIsModalOpen(true);
   };
 
-  const openEditModal = (product: Product) => {
-    setEditingProductId(product.id);
+  const openEditModal = async (product: Product) => {
+    setSubmitError(null);
+    const [productDetail, groups] = await Promise.all([
+      fetchProductDetail(product.id).catch(() => null),
+      loadUnitGroups(),
+    ]);
+    const sourceProduct = productDetail ?? product;
+    const matchedUnit = findUnitByCode(groups, sourceProduct.unit_code);
+
+    if (sourceProduct.unit_code && !matchedUnit) {
+      console.warn(
+        `Product unit_code "${sourceProduct.unit_code}" was not found in /unit-groups/with-units`,
+      );
+    }
+
+    setEditingProductId(sourceProduct.id);
     setForm({
-      sku: product.sku ?? "",
-      barcode: product.barcode ?? "",
-      description: product.description ?? "",
-      product_name: product.product_name ?? "",
-      category_id: product.category_id ? String(product.category_id) : "",
-      unit_code: product.unit_code ?? "",
-      price_mode: (product.price_mode as PriceMode) ?? "FIXED_PRICE",
+      sku: sourceProduct.sku ?? "",
+      barcode: sourceProduct.barcode ?? "",
+      description: sourceProduct.description ?? "",
+      product_name: sourceProduct.product_name ?? "",
+      category_id: sourceProduct.category_id ? String(sourceProduct.category_id) : "",
+      unit_code: matchedUnit?.unit.unit_code ?? "",
+      unit_id: matchedUnit ? String(matchedUnit.unit.id) : "",
+      price_mode: (sourceProduct.price_mode as PriceMode) ?? "FIXED_PRICE",
       cost_price:
-        product.cost_price !== undefined && product.cost_price !== null
-          ? String(product.cost_price)
+        sourceProduct.cost_price !== undefined && sourceProduct.cost_price !== null
+          ? String(sourceProduct.cost_price)
           : "",
       sale_price:
-        product.sale_price !== undefined && product.sale_price !== null
-          ? String(product.sale_price)
+        sourceProduct.sale_price !== undefined && sourceProduct.sale_price !== null
+          ? String(sourceProduct.sale_price)
           : "",
       stock_qty:
-        product.stock_qty !== undefined && product.stock_qty !== null
-          ? String(product.stock_qty)
+        sourceProduct.stock_qty !== undefined && sourceProduct.stock_qty !== null
+          ? String(sourceProduct.stock_qty)
           : "",
       min_stock_qty:
-        product.min_stock_qty !== undefined &&
-        product.min_stock_qty !== null
-          ? String(product.min_stock_qty)
+        sourceProduct.min_stock_qty !== undefined &&
+        sourceProduct.min_stock_qty !== null
+          ? String(sourceProduct.min_stock_qty)
           : "",
-      track_stock: Boolean(product.track_stock),
-      allow_discount: Boolean(product.allow_discount),
-      image_url: product.image_url ?? "",
+      track_stock: Boolean(sourceProduct.track_stock),
+      allow_discount: Boolean(sourceProduct.allow_discount),
+      image_url: sourceProduct.image_url ?? "",
     });
-    setSubmitError(null);
-    setOriginalImageUrl(product.image_url ?? null);
+    setSelectedUnitGroupId(matchedUnit ? String(matchedUnit.unitGroup.id) : "");
+    setOriginalImageUrl(sourceProduct.image_url ?? null);
     resetImageSelection();
     setIsModalOpen(true);
   };
@@ -671,15 +841,7 @@ export default function ProductLandingpage() {
   ): Promise<Product | null> => {
     const response = await authorizedFetch(`/products/${productId}`);
     if (!response.ok) return null;
-    const payload = (await response.json()) as Product | { data?: Product };
-    if (
-      typeof payload === "object" &&
-      payload !== null &&
-      "data" in payload
-    ) {
-      return (payload as { data?: Product }).data ?? null;
-    }
-    return payload as Product;
+    return unwrapProductResponse(await response.json().catch(() => null));
   };
 
   const openEditModalFromScannedProduct = async (scannedProduct: ScannedProduct) => {
@@ -691,7 +853,7 @@ export default function ProductLandingpage() {
     );
 
     if (existingProduct) {
-      openEditModal(existingProduct);
+      await openEditModal(existingProduct);
       return;
     }
 
@@ -699,7 +861,7 @@ export default function ProductLandingpage() {
       () => null,
     );
     if (productDetail) {
-      openEditModal(productDetail);
+      await openEditModal(productDetail);
       return;
     }
 
@@ -708,7 +870,7 @@ export default function ProductLandingpage() {
         ? "WEIGHT_PRICE"
         : scannedProduct.product_type;
 
-    openEditModal({
+    await openEditModal({
       id: scannedProduct.id,
       barcode: scannedProduct.barcode ?? form.barcode.trim(),
       product_name: scannedProduct.name,
@@ -716,6 +878,7 @@ export default function ProductLandingpage() {
         form.category_id ||
         (sortedCategories.length > 0 ? String(sortedCategories[0].id) : ""),
       unit_code: "",
+      unit_id: "",
       price_mode: scannedPriceMode,
       cost_price: 0,
       sale_price: Number(scannedProduct.sale_price) || 0,
@@ -775,6 +938,7 @@ export default function ProductLandingpage() {
     resetImageSelection();
     setEditingProductId(null);
     setOriginalImageUrl(null);
+    setSelectedUnitGroupId("");
     setIsModalOpen(false);
   };
 
@@ -807,22 +971,29 @@ export default function ProductLandingpage() {
   // ตรวจสอบว่าสามารถบันทึกได้หรือไม่
   const isFormValid = useMemo(() => {
     const trimmedBarcode = form.barcode.trim();
-    const trimmedUnitCode = form.unit_code.trim();
     const trimmedProductName = form.product_name.trim();
     
-    return trimmedBarcode !== "" && trimmedUnitCode !== "" && trimmedProductName !== "";
-  }, [form.barcode, form.unit_code, form.product_name]);
+    return trimmedBarcode !== "" && form.unit_code !== "" && trimmedProductName !== "";
+  }, [form.barcode, form.product_name, form.unit_code]);
 
   const handleSubmitProduct = async (event: FormEvent) => {
     event.preventDefault();
 
     const trimmedName = form.product_name.trim();
     const trimmedBarcode = normalizeBarcode(form.barcode);
-    const trimmedUnitCode = form.unit_code.trim();
 
     // เพิ่มการตรวจสอบหน่วย
-    if (!trimmedUnitCode) {
-      setSubmitError("กรุณากรอกหน่วย");
+    if (!form.unit_code) {
+      setSubmitError("กรุณาเลือกหน่วย");
+      return;
+    }
+
+    const selectedUnit = availableUnits.find(
+      (unit) => unit.unit_code === form.unit_code,
+    );
+
+    if (!selectedUnit) {
+      setSubmitError("ไม่พบข้อมูลหน่วยที่เลือก กรุณาเลือกหน่วยอีกครั้ง");
       return;
     }
 
@@ -882,7 +1053,7 @@ export default function ProductLandingpage() {
         description: trimmedDescription || (isService ? "" : isEditing ? null : undefined),
         product_name: trimmedName,
         category_id: Number(form.category_id) || form.category_id,
-        unit_code: trimmedUnitCode,
+        unit_code: selectedUnit.unit_code,
         price_mode: form.price_mode,
         cost_price: isService ? 0 : Number(form.cost_price) || 0,
         sale_price: isService ? 0 : Number(form.sale_price) || 0,
@@ -926,6 +1097,7 @@ export default function ProductLandingpage() {
       setIsModalOpen(false);
       setEditingProductId(null);
       setForm(EMPTY_FORM);
+      setSelectedUnitGroupId("");
       resetImageSelection();
 
       // ถ้ามีการเปลี่ยน/ลบรูประหว่างแก้ไข ให้ลบรูปเดิมออกจาก server ทิ้ง
@@ -1182,7 +1354,7 @@ export default function ProductLandingpage() {
                     <div className="flex shrink-0 items-center gap-1">
                       <button
                         type="button"
-                        onClick={() => openEditModal(product)}
+                        onClick={() => void openEditModal(product)}
                         title="แก้ไขสินค้า"
                         className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-white hover:text-[#1d6fd8]"
                       >
@@ -1369,7 +1541,7 @@ export default function ProductLandingpage() {
                   />
                 </div>
 
-                <div className="col-span-3">
+                <div className="col-span-2">
                   <label className="mb-1.5 block text-sm font-medium text-slate-600">
                     ชื่อสินค้า <span className="text-red-500">*</span>
                   </label>
@@ -1386,18 +1558,61 @@ export default function ProductLandingpage() {
 
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-slate-600">
+                    กลุ่มหน่วย <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={selectedUnitGroupId}
+                    onChange={(event) => {
+                      setSelectedUnitGroupId(event.target.value);
+                      updateForm("unit_id", "");
+                      updateForm("unit_code", "");
+                    }}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20 disabled:bg-slate-50 disabled:text-slate-400"
+                    disabled={isLoadingUnitGroups}
+                  >
+                    <option value="">
+                      {isLoadingUnitGroups ? "กำลังโหลด..." : "เลือกกลุ่มหน่วย"}
+                    </option>
+                    {unitGroups.map((unitGroup) => (
+                      <option key={unitGroup.id} value={String(unitGroup.id)}>
+                        {unitGroup.group_name_th}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-slate-600">
                     หน่วย <span className="text-red-500">*</span>
                   </label>
-                  <input
-                    type="text"
+                  <select
                     value={form.unit_code}
-                    onChange={(event) =>
-                      updateForm("unit_code", event.target.value)
-                    }
-                    placeholder="เช่น CUP, ชิ้น, กก."
-                    className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
-                  />
+                    onChange={(event) => {
+                      const unit = availableUnits.find(
+                        (item) => item.unit_code === event.target.value,
+                      );
+                      updateForm("unit_code", unit?.unit_code ?? "");
+                      updateForm("unit_id", unit ? String(unit.id) : "");
+                    }}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20 disabled:bg-slate-50 disabled:text-slate-400"
+                    disabled={!selectedUnitGroupId || isLoadingUnitGroups}
+                  >
+                    <option value="">
+                      {!selectedUnitGroupId ? "เลือกกลุ่มก่อน" : "เลือกหน่วย"}
+                    </option>
+                    {availableUnits.map((unit) => (
+                      <option key={unit.id} value={unit.unit_code}>
+                        {unit.unit_name_th}
+                      </option>
+                    ))}
+                  </select>
                 </div>
+
+                {unitGroupsError ? (
+                  <p className="col-span-4 text-xs text-red-500">
+                    {unitGroupsError}
+                  </p>
+                ) : null}
 
                 <div className="col-span-4">
                   <label className="mb-1.5 block text-sm font-medium text-slate-600">

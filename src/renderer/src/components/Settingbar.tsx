@@ -1,14 +1,14 @@
 import {
-  IconReceiptTax,
-  IconPrinter,
-  IconReceipt,
-  IconCreditCard,
   IconArrowBackUp,
+  IconBuildingStore,
+  IconCashBanknote,
   IconChevronLeft,
   IconChevronRight,
-  IconUserPlus,
-  IconUserCircle,
-  IconBuildingStore,
+  IconPrinter,
+  IconReceipt,
+  IconSettings,
+  IconUserCog,
+  IconUsersGroup,
 } from "@tabler/icons-react";
 import AccountBar from "./AccountBar";
 import Logoutbar from "./Logoutbar";
@@ -31,17 +31,22 @@ export default function Settingbar({
   storeName = "AVA MY POS",
 }: SettingbarProps) {
   const menuItems = [
-    { id: "storeInfo", label: "ข้อมูลร้านค้า", icon: IconBuildingStore },
-    { id: "userInfo", label: "ข้อมูลผู้ใช้งาน", icon: IconUserCircle },
-    { id: "employees", label: "พนักงาน", icon: IconUserPlus },
-    { id: "tax", label: "ภาษี", icon: IconReceiptTax },
-    { id: "printer", label: "ตั้งค่าเครื่องพิมพ์", icon: IconPrinter },
-    { id: "receipt", label: "ใบเสร็จรับเงิน", icon: IconReceipt },
-    { id: "payment", label: "ชำระเงิน", icon: IconCreditCard },
+    { id: "storeInfo", label: "ข้อมูลร้านค้า", icon: IconBuildingStore, title: "ข้อมูลร้านค้า" },
+    { id: "tax", label: "ภาษี", icon: IconSettings, title: "ตั้งค่าภาษี" },
+    { id: "payment", label: "ช่องทางชำระเงิน", icon: IconCashBanknote, title: "ช่องทางชำระเงิน" },
+    { id: "receipt", label: "ใบเสร็จ", icon: IconReceipt, title: "ตั้งค่าใบเสร็จ" },
+    { id: "printer", label: "เครื่องพิมพ์", icon: IconPrinter, title: "ตั้งค่าเครื่องพิมพ์" },
+    { id: "userInfo", label: "ข้อมูลผู้ใช้", icon: IconUserCog, title: "ข้อมูลผู้ใช้" },
+    { id: "employees", label: "พนักงาน", icon: IconUsersGroup, title: "จัดการพนักงาน" },
   ];
 
+  const activeMenu = menuItems.find((item) => item.id === currentPage);
+  const currentTitle = activeMenu?.title || "การตั้งค่า";
+
   const handleGoBack = () => {
-    if (onSwitchSidebar) onSwitchSidebar();
+    if (onSwitchSidebar) {
+      onSwitchSidebar();
+    }
   };
 
   return (
@@ -88,25 +93,33 @@ export default function Settingbar({
 
         <AccountBar isOpen={isOpen} />
 
+        {isOpen ? (
+          <div className="border-b border-white/10 px-4 py-3">
+            <h2 className="truncate text-base font-medium text-white/70">
+              {currentTitle}
+            </h2>
+          </div>
+        ) : null}
+
         <nav className="flex-1 overflow-y-auto px-3 py-4">
           <ul className="space-y-1">
             {menuItems.map((item) => {
               const Icon = item.icon;
               const isActive = currentPage === item.id;
+
               return (
                 <li key={item.id}>
                   <button
                     type="button"
                     onClick={() => onNavigate(item.id)}
-                    title={item.label}
-                    aria-label={item.label}
-                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200 ${
+                    title={item.title}
+                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-base font-medium transition-all duration-200 ${
                       isActive
                         ? "bg-white/25 text-white shadow-lg"
                         : "text-white/80 hover:bg-white/15 hover:text-white"
                     }`}
                   >
-                    <Icon size={20} className="shrink-0" />
+                    <Icon size={24} className="shrink-0" />
                     {isOpen ? <span className="truncate">{item.label}</span> : null}
                   </button>
                 </li>
@@ -125,10 +138,10 @@ export default function Settingbar({
               <button
                 type="button"
                 onClick={handleGoBack}
-                className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200 text-white/80 hover:bg-white/15 hover:text-white ${
+                className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-base font-medium text-white/80 transition-all duration-200 hover:bg-white/15 hover:text-white ${
                   isOpen ? "justify-start" : "justify-center"
                 }`}
-                title="ย้อนกลับไปหน้าแรก"
+                title="ย้อนกลับไปหน้าหลัก"
               >
                 <IconArrowBackUp size={20} className="shrink-0" />
                 {isOpen ? <span className="truncate">ย้อนกลับ</span> : null}

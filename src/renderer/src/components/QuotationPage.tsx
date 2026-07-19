@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type KeyboardEvent,
 } from "react";
 import QRCode from "qrcode";
 import { toPng } from "html-to-image";
@@ -25,6 +26,9 @@ import {
 } from "@tabler/icons-react";
 import { ensureValidAccessToken, refreshAccessToken } from "./auth";
 import { normalizeBarcode, isLikelyBarcode } from "./BarcodeNormalizer";
+
+const SCANNER_KEY_INTERVAL_MS = 50;
+const SCANNER_MIN_FAST_KEYS = 3;
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -90,6 +94,15 @@ interface Customer {
   updated_at: string;
 }
 
+interface SalesUser {
+  user_id: string;
+  username: string;
+  full_name: string;
+  phone_number: string | null;
+  role: string;
+  is_active: boolean;
+}
+
 interface QuotationItem {
   id: string;
   description: string;
@@ -131,6 +144,8 @@ interface ProductsResponse {
 
 const API_PATH_KEY = "apiPath";
 const ACCESS_TOKEN_KEY = "access_token";
+const POS_DEVICE_KEY = "pos_device";
+const DEFAULT_VAT_RATE = 7;
 
 const THAI_DIGITS = ["ศูนย์", "หนึ่ง", "สอง", "สาม", "สี่", "ห้า", "หก", "เจ็ด", "แปด", "เก้า"];
 const THAI_UNITS = ["", "สิบ", "ร้อย", "พัน", "หมื่น", "แสน", "ล้าน"];
@@ -149,6 +164,13 @@ const genId = (): string =>
 const toNumber = (value: unknown, fallback = 0): number => {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : fallback;
+};
+
+const getVatRateFromPosDevice = (value: unknown): number => {
+  if (!value || typeof value !== "object") return DEFAULT_VAT_RATE;
+
+  const device = value as { vat_rate?: unknown; pos_device?: { vat_rate?: unknown } };
+  return toNumber(device.vat_rate ?? device.pos_device?.vat_rate, DEFAULT_VAT_RATE);
 };
 
 const formatCurrency = (value: number): string =>
@@ -371,10 +393,13 @@ function QuotationDocument({
   subtotal,
   discountPercent,
   discountAmount,
+  isVatEnabled,
+  vatRate,
   vatAmount,
   grandTotal,
   notes,
   promptPayQrDataUrl,
+  showOwnerName,
 }: {
   storeData: StoreSettingsData;
   apiBaseUrl: string;
@@ -388,10 +413,13 @@ function QuotationDocument({
   subtotal: number;
   discountPercent: number;
   discountAmount: number;
+  isVatEnabled: boolean;
+  vatRate: number;
   vatAmount: number;
   grandTotal: number;
   notes: string;
   promptPayQrDataUrl: string | null;
+  showOwnerName: boolean;
 }) {
   const { store, payment_account: paymentAccount } = storeData;
   const logoUrl = resolveAssetUrl(apiBaseUrl, store.logo_url);
@@ -406,7 +434,9 @@ function QuotationDocument({
           ) : null}
           <div>
             <p className="text-lg font-bold">{store.store_name}</p>
-            {store.owner_name ? <p className="text-xs text-slate-500">{store.owner_name}</p> : null}
+            {showOwnerName && store.owner_name ? (
+              <p className="text-xs text-slate-500">{store.owner_name}</p>
+            ) : null}
             <p className="mt-1 max-w-xs text-xs leading-relaxed text-slate-600">{store.address}</p>
             <p className="text-xs text-slate-600">
               โทร. {store.phone}
@@ -454,7 +484,7 @@ function QuotationDocument({
           <p className="text-slate-600">ผู้เสนอราคา: {salesperson || "-"}</p>
           <p className="text-slate-600">สกุลเงิน: {store.currency}</p>
           <p className="text-slate-600">
-            ภาษีมูลค่าเพิ่ม: {store.vat_enabled ? `${store.vat_rate}%` : "ไม่มี"}
+            ภาษีมูลค่าเพิ่ม: {isVatEnabled ? `${vatRate}%` : "ไม่มี"}
           </p>
         </div>
       </div>
@@ -535,9 +565,9 @@ function QuotationDocument({
               <span>-{formatNumber(discountAmount)}</span>
             </div>
           ) : null}
-          {store.vat_enabled ? (
+          {isVatEnabled ? (
             <div className="flex justify-between border-b border-slate-100 py-1.5">
-              <span className="text-slate-500">ภาษีมูลค่าเพิ่ม ({store.vat_rate}%)</span>
+              <span className="text-slate-500">ภาษีมูลค่าเพิ่ม ({vatRate}%)</span>
               <span>{formatNumber(vatAmount)}</span>
             </div>
           ) : null}
@@ -571,12 +601,17 @@ function QuotationDocument({
 
 export default function QuotationPage() {
   const previewRef = useRef<HTMLDivElement | null>(null);
+  const customerSearchContainerRef = useRef<HTMLDivElement | null>(null);
+  const salespersonContainerRef = useRef<HTMLDivElement | null>(null);
 
   const [apiBaseUrl, setApiBaseUrl] = useState("");
   const [storeData, setStoreData] = useState<StoreSettingsData | null>(null);
   const [storeLoading, setStoreLoading] = useState(true);
+  const [showOwnerName, setShowOwnerName] = useState(false);
+  const [isVatEnabled, setIsVatEnabled] = useState(true);
+  const [vatRate, setVatRate] = useState(DEFAULT_VAT_RATE);
 
-  // Customer states - เปลี่ยนจากค้นหาด้วย ID เป็นค้นหาและเลือกจาก list
+  // Customer states
   const [customerSearchInput, setCustomerSearchInput] = useState("");
   const [customerList, setCustomerList] = useState<Customer[]>([]);
   const [customerListLoading, setCustomerListLoading] = useState(false);
@@ -590,6 +625,9 @@ export default function QuotationPage() {
   const [issueDate, setIssueDate] = useState(todayIso());
   const [validUntil, setValidUntil] = useState(addDaysIso(todayIso(), 7));
   const [salesperson, setSalesperson] = useState("");
+  const [salesUsers, setSalesUsers] = useState<SalesUser[]>([]);
+  const [salesUsersLoading, setSalesUsersLoading] = useState(false);
+  const [showSalespersonDropdown, setShowSalespersonDropdown] = useState(false);
   const [notes, setNotes] = useState("ราคานี้ยังไม่รวมค่าจัดส่ง (ถ้ามี)\nกรุณาชำระเงินตามช่องทางที่ระบุด้านล่าง");
   const [discountPercent, setDiscountPercent] = useState(0);
 
@@ -619,10 +657,24 @@ export default function QuotationPage() {
   );
   const afterDiscount = Math.max(0, subtotal - discountAmount);
   const vatAmount = useMemo(
-    () => (storeData?.store.vat_enabled ? (afterDiscount * storeData.store.vat_rate) / 100 : 0),
-    [afterDiscount, storeData],
+    () => (isVatEnabled ? (afterDiscount * vatRate) / 100 : 0),
+    [afterDiscount, isVatEnabled, vatRate],
   );
   const grandTotal = afterDiscount + vatAmount;
+  const filteredSalesUsers = useMemo(() => {
+    const keyword = salesperson.trim().toLowerCase();
+    const activeUsers = salesUsers.filter((user) => user.is_active && user.full_name.trim());
+
+    if (!keyword) {
+      return activeUsers;
+    }
+
+    return activeUsers.filter((user) =>
+      [user.full_name, user.username, user.role]
+        .filter(Boolean)
+        .some((value) => value.toLowerCase().includes(keyword)),
+    );
+  }, [salesperson, salesUsers]);
 
   /* --- data loading ----------------------------------------------------- */
 
@@ -641,6 +693,10 @@ export default function QuotationPage() {
       }
       const payload = (await response.json()) as { data?: StoreSettingsData };
       if (!payload.data?.store) throw new Error("ไม่พบข้อมูลร้านค้าจากเซิร์ฟเวอร์");
+      const storedPosDevice = await window.electronStore.get(POS_DEVICE_KEY);
+      const storedVatRate = getVatRateFromPosDevice(storedPosDevice);
+      setVatRate(storedVatRate);
+      setIsVatEnabled(Boolean(payload.data.store.vat_enabled));
       setStoreData(payload.data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "ไม่สามารถโหลดข้อมูลร้านได้");
@@ -652,6 +708,36 @@ export default function QuotationPage() {
   useEffect(() => {
     void loadStoreSettings();
   }, [loadStoreSettings]);
+
+  const loadSalesUsers = useCallback(async () => {
+    if (salesUsers.length > 0) {
+      setShowSalespersonDropdown(true);
+      return;
+    }
+
+    setSalesUsersLoading(true);
+    setError(null);
+
+    try {
+      const response = await authorizedFetch("/users", {
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!response.ok) {
+        throw new Error(await getApiErrorMessage(response, `โหลดรายชื่อผู้เสนอราคาไม่สำเร็จ (${response.status})`));
+      }
+
+      const users = (await response.json()) as SalesUser[];
+      setSalesUsers(Array.isArray(users) ? users : []);
+      setShowSalespersonDropdown(Array.isArray(users) && users.length > 0);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ไม่สามารถโหลดรายชื่อผู้เสนอราคาได้");
+      setSalesUsers([]);
+      setShowSalespersonDropdown(false);
+    } finally {
+      setSalesUsersLoading(false);
+    }
+  }, [salesUsers.length]);
 
   // ฟังก์ชันค้นหาลูกค้า - ดึงข้อมูลจาก API /customers
   const searchCustomers = useCallback(async (searchTerm: string) => {
@@ -755,6 +841,50 @@ export default function QuotationPage() {
     };
   }, [customerSearchTimer]);
 
+  useEffect(() => {
+    if (!showCustomerDropdown) {
+      return;
+    }
+
+    const handleOutsideMouseDown = (event: MouseEvent) => {
+      if (event.button !== 0) {
+        return;
+      }
+
+      const container = customerSearchContainerRef.current;
+      if (container && !container.contains(event.target as Node)) {
+        setShowCustomerDropdown(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleOutsideMouseDown);
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideMouseDown);
+    };
+  }, [showCustomerDropdown]);
+
+  useEffect(() => {
+    if (!showSalespersonDropdown) {
+      return;
+    }
+
+    const handleOutsideMouseDown = (event: MouseEvent) => {
+      if (event.button !== 0) {
+        return;
+      }
+
+      const container = salespersonContainerRef.current;
+      if (container && !container.contains(event.target as Node)) {
+        setShowSalespersonDropdown(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleOutsideMouseDown);
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideMouseDown);
+    };
+  }, [showSalespersonDropdown]);
+
   // โหลดลูกค้าทั้งหมดเมื่อ focus ที่ input
   const loadAllCustomers = useCallback(async () => {
     if (customerList.length > 0) {
@@ -849,12 +979,8 @@ export default function QuotationPage() {
       setProductSearchError(null);
 
       try {
-        const normalizedSearch = isLikelyBarcode(searchTerm)
-          ? normalizeBarcode(searchTerm)
-          : searchTerm;
-
         const response = await authorizedFetch(
-          `/products?page=1&limit=50&search=${encodeURIComponent(normalizedSearch)}`,
+          `/products?page=1&limit=50&search=${encodeURIComponent(searchTerm.trim())}`,
           {
             signal: AbortSignal.timeout(10000),
           },
@@ -889,16 +1015,61 @@ export default function QuotationPage() {
   );
 
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastProductSearchKeyTimeRef = useRef<number | null>(null);
+  const fastProductSearchKeyCountRef = useRef(0);
+  const isProductSearchScannerInputRef = useRef(false);
+
+  const resetProductSearchScannerTiming = () => {
+    lastProductSearchKeyTimeRef.current = null;
+    fastProductSearchKeyCountRef.current = 0;
+    isProductSearchScannerInputRef.current = false;
+  };
+
+  const handleProductSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      if (isProductSearchScannerInputRef.current && isLikelyBarcode(productSearchInput)) {
+        const normalizedSearch = normalizeBarcode(productSearchInput);
+        setProductSearchInput(normalizedSearch);
+        searchProducts(normalizedSearch);
+        resetProductSearchScannerTiming();
+        return;
+      }
+
+      searchProducts(productSearchInput);
+      resetProductSearchScannerTiming();
+      return;
+    }
+
+    if (event.key.length !== 1) {
+      resetProductSearchScannerTiming();
+      return;
+    }
+
+    const now = performance.now();
+    const lastKeyTime = lastProductSearchKeyTimeRef.current;
+    const isFastKey = lastKeyTime !== null && now - lastKeyTime <= SCANNER_KEY_INTERVAL_MS;
+
+    fastProductSearchKeyCountRef.current = isFastKey
+      ? fastProductSearchKeyCountRef.current + 1
+      : 0;
+    isProductSearchScannerInputRef.current =
+      fastProductSearchKeyCountRef.current >= SCANNER_MIN_FAST_KEYS;
+    lastProductSearchKeyTimeRef.current = now;
+  };
 
   const handleProductSearch = (value: string) => {
-    setProductSearchInput(value);
+    const searchValue =
+      isProductSearchScannerInputRef.current && isLikelyBarcode(value)
+        ? normalizeBarcode(value)
+        : value;
+    setProductSearchInput(searchValue);
     
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
     
     debounceTimerRef.current = setTimeout(() => {
-      searchProducts(value);
+      searchProducts(searchValue);
     }, 300);
   };
 
@@ -922,6 +1093,7 @@ export default function QuotationPage() {
     setProductSearchInput("");
     setProductSearchResults([]);
     setProductSearchError(null);
+    resetProductSearchScannerTiming();
     setTimeout(() => {
       productSearchInputRef.current?.focus();
     }, 0);
@@ -932,6 +1104,7 @@ export default function QuotationPage() {
     setProductSearchInput("");
     setProductSearchResults([]);
     setProductSearchError(null);
+    resetProductSearchScannerTiming();
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
       debounceTimerRef.current = null;
@@ -1257,18 +1430,44 @@ export default function QuotationPage() {
         {/* --- Editor panel --- */}
         <div className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1">
           <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
-            <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-700">
-              <StoreIcon size={18} className="text-[#1d6fd8]" />
-              ข้อมูลร้าน
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                <StoreIcon size={18} className="text-[#1d6fd8]" />
+                ข้อมูลร้าน
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowOwnerName(!showOwnerName)}
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                  showOwnerName 
+                    ? 'bg-[#1d6fd8]/10 text-[#1d6fd8] hover:bg-[#1d6fd8]/20' 
+                    : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                }`}
+              >
+                {showOwnerName ? (
+                  <>
+                    <span className="h-1.5 w-1.5 rounded-full bg-[#1d6fd8]" />
+                    แสดงชื่อเจ้าของร้าน
+                  </>
+                ) : (
+                  <>
+                    <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
+                    ซ่อนชื่อเจ้าของร้าน
+                  </>
+                )}
+              </button>
             </div>
             {storeLoading ? (
               <p className="text-sm text-slate-400">กำลังโหลด...</p>
             ) : storeData ? (
               <div className="text-sm text-slate-600">
                 <p className="font-medium text-slate-800">{storeData.store.store_name}</p>
+                {showOwnerName && storeData.store.owner_name && (
+                  <p className="text-xs text-slate-500">เจ้าของร้าน: {storeData.store.owner_name}</p>
+                )}
                 <p className="text-xs text-slate-500">{storeData.store.address}</p>
                 <p className="text-xs text-slate-500">
-                  ภาษีมูลค่าเพิ่ม: {storeData.store.vat_enabled ? `${storeData.store.vat_rate}%` : "ไม่เปิดใช้"}
+                  ภาษีมูลค่าเพิ่ม: {isVatEnabled ? `${vatRate}%` : "ไม่เปิดใช้"}
                 </p>
               </div>
             ) : (
@@ -1282,70 +1481,29 @@ export default function QuotationPage() {
               ข้อมูลลูกค้า
             </div>
             
-            {/* Input สำหรับค้นหาลูกค้า */}
-            <div className="relative">
-              <input
-                type="text"
-                value={customerSearchInput}
-                onChange={(event) => handleCustomerSearch(event.target.value)}
-                onFocus={() => {
-                  if (!customerSearchInput.trim()) {
-                    loadAllCustomers();
-                  }
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    setShowCustomerDropdown(false);
-                  }
-                }}
-                placeholder="ค้นหาลูกค้าด้วยชื่อ หรือรหัส..."
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
-              />
-              {customerListLoading && (
-                <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                  <Loader size={18} className="animate-spin text-[#1d6fd8]" />
-                </div>
-              )}
-              
-              {/* Dropdown รายการลูกค้า */}
-              {showCustomerDropdown && customerList.length > 0 && (
-                <div className="absolute z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
-                  {customerList.map((cust) => (
-                    <button
-                      key={cust.id}
-                      type="button"
-                      onClick={() => selectCustomer(cust)}
-                      className="w-full border-b border-slate-100 px-4 py-3 text-left hover:bg-slate-50 last:border-b-0"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="font-medium text-slate-700">{cust.customer_name}</div>
-                          <div className="text-xs text-slate-500">
-                            รหัส: {cust.customer_code}
-                            {cust.phone_number && ` · โทร: ${cust.phone_number}`}
-                          </div>
-                        </div>
-                        {cust.total_purchase_amount && parseFloat(cust.total_purchase_amount) > 0 && (
-                          <div className="text-xs text-slate-400">
-                            ยอดซื้อ: {formatCurrency(parseFloat(cust.total_purchase_amount))}
-                          </div>
-                        )}
-                      </div>
-                      {cust.address && (
-                        <div className="mt-1 text-xs text-slate-400">{cust.address}</div>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
             {/* แสดงลูกค้าที่เลือก */}
             {customer ? (
               <div className="mt-3 rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
                 <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-800">{customer.customer_name}</p>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-semibold text-slate-800">{customer.customer_name}</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          clearCustomer();
+                          // โฟกัสที่ input เพื่อให้พิมพ์ค้นหาใหม่ได้ทันที
+                          const input = document.querySelector('input[placeholder="ค้นหาลูกค้าด้วยชื่อ หรือรหัส..."]') as HTMLInputElement;
+                          if (input) {
+                            setTimeout(() => input.focus(), 50);
+                          }
+                        }}
+                        className="flex h-6 w-6 items-center justify-center rounded-full text-slate-400 hover:bg-slate-200 hover:text-red-500"
+                        title="ยกเลิกการเลือกลูกค้า"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
                     <p>รหัส: {customer.customer_code}</p>
                     {customer.phone_number && <p>โทร. {customer.phone_number}</p>}
                     {customer.email && <p>อีเมล: {customer.email}</p>}
@@ -1356,26 +1514,80 @@ export default function QuotationPage() {
                       </p>
                     )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={clearCustomer}
-                    className="text-xs font-medium text-red-500 hover:underline"
-                  >
-                    เปลี่ยน
-                  </button>
                 </div>
               </div>
             ) : (
-              <div className="mt-3">
-                <label className="text-xs text-slate-500">หรือระบุชื่อลูกค้า walk-in</label>
-                <input
-                  type="text"
-                  value={walkInName}
-                  onChange={(event) => setWalkInName(event.target.value)}
-                  placeholder={storeData?.store.default_customer_name || "ลูกค้าทั่วไป"}
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
-                />
-              </div>
+              <>
+                {/* Input สำหรับค้นหาลูกค้า */}
+                <div ref={customerSearchContainerRef} className="relative mt-3">
+                  <input
+                    type="text"
+                    value={customerSearchInput}
+                    onChange={(event) => handleCustomerSearch(event.target.value)}
+                    onFocus={() => {
+                      if (!customerSearchInput.trim()) {
+                        loadAllCustomers();
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        setShowCustomerDropdown(false);
+                      }
+                    }}
+                    placeholder="ค้นหาลูกค้าด้วยชื่อ หรือรหัส..."
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+                  />
+                  {customerListLoading && (
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                      <Loader size={18} className="animate-spin text-[#1d6fd8]" />
+                    </div>
+                  )}
+                  
+                  {/* Dropdown รายการลูกค้า */}
+                  {showCustomerDropdown && customerList.length > 0 && (
+                    <div className="absolute z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
+                      {customerList.map((cust) => (
+                        <button
+                          key={cust.id}
+                          type="button"
+                          onClick={() => selectCustomer(cust)}
+                          className="w-full border-b border-slate-100 px-4 py-3 text-left hover:bg-slate-50 last:border-b-0"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="font-medium text-slate-700">{cust.customer_name}</div>
+                              <div className="text-xs text-slate-500">
+                                รหัส: {cust.customer_code}
+                                {cust.phone_number && ` · โทร: ${cust.phone_number}`}
+                              </div>
+                            </div>
+                            {cust.total_purchase_amount && parseFloat(cust.total_purchase_amount) > 0 && (
+                              <div className="text-xs text-slate-400">
+                                ยอดซื้อ: {formatCurrency(parseFloat(cust.total_purchase_amount))}
+                              </div>
+                            )}
+                          </div>
+                          {cust.address && (
+                            <div className="mt-1 text-xs text-slate-400">{cust.address}</div>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* ช่องกรอกชื่อ walk-in */}
+                <div className="mt-3">
+                  <label className="text-xs text-slate-500">หรือระบุชื่อลูกค้า walk-in</label>
+                  <input
+                    type="text"
+                    value={walkInName}
+                    onChange={(event) => setWalkInName(event.target.value)}
+                    placeholder={storeData?.store.default_customer_name || "ลูกค้าทั่วไป"}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+                  />
+                </div>
+              </>
             )}
           </div>
 
@@ -1409,16 +1621,54 @@ export default function QuotationPage() {
                   className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
                 />
               </label>
-              <label className="col-span-2 text-xs text-slate-500">
-                ผู้เสนอราคา
+              <div ref={salespersonContainerRef} className="relative col-span-2 text-xs text-slate-500">
+                <label htmlFor="quotation-salesperson">ผู้เสนอราคา</label>
                 <input
+                  id="quotation-salesperson"
                   type="text"
                   value={salesperson}
-                  onChange={(event) => setSalesperson(event.target.value)}
+                  onChange={(event) => {
+                    setSalesperson(event.target.value);
+                    setShowSalespersonDropdown(true);
+                  }}
+                  onFocus={() => {
+                    void loadSalesUsers();
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      setShowSalespersonDropdown(false);
+                    }
+                  }}
                   placeholder="ชื่อพนักงานขาย"
                   className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
                 />
-              </label>
+                {salesUsersLoading ? (
+                  <div className="absolute right-3 top-8">
+                    <Loader size={18} className="animate-spin text-[#1d6fd8]" />
+                  </div>
+                ) : null}
+                {showSalespersonDropdown && filteredSalesUsers.length > 0 ? (
+                  <div className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
+                    {filteredSalesUsers.map((user) => (
+                      <button
+                        key={user.user_id}
+                        type="button"
+                        onClick={() => {
+                          setSalesperson(user.full_name);
+                          setShowSalespersonDropdown(false);
+                        }}
+                        className="w-full border-b border-slate-100 px-4 py-3 text-left hover:bg-slate-50 last:border-b-0"
+                      >
+                        <div className="font-medium text-slate-700">{user.full_name}</div>
+                        <div className="text-xs text-slate-500">
+                          {user.role}
+                          {user.phone_number ? ` · โทร: ${user.phone_number}` : ""}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
               <label className="col-span-2 text-xs text-slate-500">
                 ส่วนลด (%)
                 <input
@@ -1430,6 +1680,27 @@ export default function QuotationPage() {
                   className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
                 />
               </label>
+              <div className="col-span-2 flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2.5">
+                <div>
+                  <p className="text-xs font-medium text-slate-600">VAT ({vatRate}%)</p>
+                  <p className="text-[11px] text-slate-400">อัตราภาษีจาก pos_device.vat_rate</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsVatEnabled((current) => !current)}
+                  className={`relative h-6 w-11 rounded-full transition-colors ${
+                    isVatEnabled ? "bg-[#1d6fd8]" : "bg-slate-300"
+                  }`}
+                  aria-pressed={isVatEnabled}
+                  aria-label="เปิดปิดการคิดภาษี"
+                >
+                  <span
+                    className={`absolute top-1 h-4 w-4 rounded-full bg-white transition-transform ${
+                      isVatEnabled ? "translate-x-6" : "translate-x-1"
+                    }`}
+                  />
+                </button>
+              </div>
               <label className="col-span-2 text-xs text-slate-500">
                 หมายเหตุ
                 <textarea
@@ -1544,9 +1815,9 @@ export default function QuotationPage() {
                   <span>-{formatCurrency(discountAmount)}</span>
                 </div>
               ) : null}
-              {storeData?.store.vat_enabled ? (
+              {isVatEnabled ? (
                 <div className="flex justify-between text-slate-500">
-                  <span>VAT ({storeData.store.vat_rate}%)</span>
+                  <span>VAT ({vatRate}%)</span>
                   <span>{formatCurrency(vatAmount)}</span>
                 </div>
               ) : null}
@@ -1606,10 +1877,13 @@ export default function QuotationPage() {
                   subtotal={subtotal}
                   discountPercent={discountPercent}
                   discountAmount={discountAmount}
+                  isVatEnabled={isVatEnabled}
+                  vatRate={vatRate}
                   vatAmount={vatAmount}
                   grandTotal={grandTotal}
                   notes={notes}
                   promptPayQrDataUrl={promptPayQrDataUrl}
+                  showOwnerName={showOwnerName}
                 />
               </div>
             </div>
@@ -1651,11 +1925,7 @@ export default function QuotationPage() {
                         value={productSearchInput}
                         onChange={(e) => handleProductSearch(e.target.value)}
                         placeholder="พิมพ์เพื่อค้นหา... หรือสแกนบาร์โค้ด"
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            searchProducts(productSearchInput);
-                          }
-                        }}
+                        onKeyDown={handleProductSearchKeyDown}
                         className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
                       />
                       {productSearchLoading && (

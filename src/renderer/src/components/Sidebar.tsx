@@ -89,13 +89,14 @@ export default function Sidebar({
                   <button
                     type="button"
                     onClick={() => onNavigate(item.id)}
-                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200 ${
+                    title={item.label}
+                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-base font-medium transition-all duration-200 ${
                       isActive
                         ? "bg-white/25 text-white shadow-lg"
                         : "text-white/80 hover:bg-white/15 hover:text-white"
                     }`}
                   >
-                    <Icon size={20} className="shrink-0" />
+                    <Icon size={24} className="shrink-0" />
                     {isOpen ? <span className="truncate">{item.label}</span> : null}
                   </button>
                 </li>

@@ -21,6 +21,11 @@ interface SettingPagesProps {
   page: string;
 }
 
+interface StoredPosDevice {
+  pos_device?: StoredPosDevice;
+  [key: string]: unknown;
+}
+
 const getDefaultExpandedSections = (page: string) => {
   if (page === "tax") return new Set(["tax"]);
   if (page === "payment") return new Set(["payment"]);
@@ -130,6 +135,34 @@ export default function SettingPages({ page }: SettingPagesProps) {
     setFormPayment((current) => ({ ...current, [key]: value }));
   };
 
+  const saveVatRateToPosDeviceStore = async (
+    vatRate: StoreSettings["vat_rate"],
+  ) => {
+    const savedVatRate = Number(vatRate) || 0;
+    const storedDevice = await window.electronStore.get("pos_device");
+
+    if (storedDevice && typeof storedDevice === "object") {
+      const device = storedDevice as StoredPosDevice;
+      const updatedDevice = device.pos_device
+        ? {
+            ...device,
+            pos_device: {
+              ...device.pos_device,
+              vat_rate: savedVatRate,
+            },
+          }
+        : {
+            ...device,
+            vat_rate: savedVatRate,
+          };
+
+      await window.electronStore.set("pos_device", updatedDevice);
+      return;
+    }
+
+    await window.electronStore.set("pos_device", { vat_rate: savedVatRate });
+  };
+
   const startEditing = () => {
     if (!storeData) return;
     setFormStore(storeData.store);
@@ -192,6 +225,20 @@ export default function SettingPages({ page }: SettingPagesProps) {
         ),
       );
     }
+
+    const savedVatRate = Number(storePayload.vat_rate) || 0;
+    await saveVatRateToPosDeviceStore(savedVatRate);
+    setStoreData((current) =>
+      current
+        ? {
+            ...current,
+            store: {
+              ...current.store,
+              vat_rate: savedVatRate,
+            },
+          }
+        : current,
+    );
   };
 
   const handleLogoUploaded = async (logoUrl: string) => {

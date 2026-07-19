@@ -24,6 +24,16 @@ interface POSPaymentProps {
   total?: number;
 }
 
+// ✅ Mixed Payment Method Types
+export type PaymentMethodType = "cash" | "transfer" | "gov_welfare" | "khon_la_krueng" | "digital_money" | "other";
+
+interface MixedPaymentLine {
+  id: string;
+  type: PaymentMethodType;
+  amount: string;
+  reference?: string;
+}
+
 const formatBaht = (value: number): string => `฿${value.toFixed(2)}`;
 
 const getCartItemName = (item: POSPaymentCartItem): string =>
@@ -77,28 +87,18 @@ const generatePromptPayQr = async (
   if (!cleanId) return null;
 
   try {
-    // ✅ สร้าง PromptPay payload ที่ถูกต้อง (EMV QR standard)
-    // generatePayload supports:
-    // - Mobile number (0xxx-xxx-xxxx format, ต้องเป็นเลข 10 หลัก)
-    // - National ID (13 หลัก)
-    // - E-wallet ID
     let payload: string;
 
-    // ตรวจเช็ค format ของ ID
     if (cleanId.length === 10 && cleanId.startsWith("0")) {
-      // เป็นเบอร์โทร
       payload = generatePayload(cleanId, { amount: amount });
     } else if (cleanId.length === 13) {
-      // เป็น National ID
       payload = generatePayload(cleanId, { amount: amount });
     } else {
-      // ไม่รู้รูปแบบ ลองใช้เลย
       payload = generatePayload(cleanId, { amount: amount });
     }
 
     console.log("✅ PromptPay Payload:", payload);
 
-    // ✅ สร้าง QR code จาก payload
     await QRCode.toCanvas(canvasRef.current, payload, {
       errorCorrectionLevel: "M",
       margin: 1,
@@ -109,12 +109,31 @@ const generatePromptPayQr = async (
       },
     });
 
-    // แปลงเป็น data URL
     const dataUrl = canvasRef.current?.toDataURL("image/png");
     return dataUrl || null;
   } catch (error) {
     console.error("❌ Generate PromptPay QR error:", error);
     return null;
+  }
+};
+
+// ✅ Get payment method display name
+const getPaymentMethodLabel = (type: PaymentMethodType): string => {
+  switch (type) {
+    case "cash":
+      return "💵 เงินสด";
+    case "transfer":
+      return "📱 โอน/พร้อมเพย์";
+    case "gov_welfare":
+      return "🏛️ บัตรสวัสดิการแห่งรัฐ";
+    case "khon_la_krueng":
+      return "🤝 คนละครึ่ง";
+    case "digital_money":
+      return "💳 เงินดิจิตอล";
+    case "other":
+      return "📌 อื่นๆ";
+    default:
+      return "วิธีชำระเงิน";
   }
 };
 
@@ -133,11 +152,17 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   const [storeData, setStoreData] = useState<StoreData | null>(null);
   const [storeError, setStoreError] = useState<string | null>(null);
   const [showSplitPopup, setShowSplitPopup] = useState(false);
-  const [splitCashInput, setSplitCashInput] = useState<string>("");
-  const [splitTransferInput, setSplitTransferInput] = useState<string>("");
+  
+  // ✅ Mixed payment state
+  const [mixedPayments, setMixedPayments] = useState<MixedPaymentLine[]>([
+    { id: "1", type: "cash", amount: total.toFixed(2) }
+  ]);
 
   // ✅ Ref สำหรับช่อง Input เงินสด
   const cashInputRef = useRef<HTMLInputElement>(null);
+  
+  // ✅ Ref สำหรับ popup container
+  const popupContainerRef = useRef<HTMLDivElement>(null);
 
   // ✅ QR code state
   const [splitQrDataUrl, setSplitQrDataUrl] = useState<string | null>(null);
@@ -154,7 +179,6 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   // ---------- tab switch ----------
   const switchTab = (tab: "cash" | "transfer" | "gov") => {
     setActiveTab(tab);
-    // ✅ เมื่อเปลี่ยนไปแท็บเงินสด ให้โฟกัสที่ Input อัตโนมัติ
     if (tab === "cash") {
       setTimeout(() => {
         cashInputRef.current?.focus();
@@ -170,7 +194,6 @@ const POSPayment: React.FC<POSPaymentProps> = ({
 
   const closePopup = () => {
     setPopupChange(null);
-    // ✅ เมื่อปิด popup ให้โฟกัสกลับที่ Input เงินสด
     setTimeout(() => {
       cashInputRef.current?.focus();
       cashInputRef.current?.select();
@@ -187,7 +210,6 @@ const POSPayment: React.FC<POSPaymentProps> = ({
     const received = parseFloat(cashInput);
     if (isNaN(received) || received < 0) {
       alert("กรุณากรอกจำนวนเงินที่ถูกต้อง");
-      // ✅ เมื่อแจ้งเตือน ให้โฟกัสกลับที่ Input
       setTimeout(() => {
         cashInputRef.current?.focus();
         cashInputRef.current?.select();
@@ -196,7 +218,6 @@ const POSPayment: React.FC<POSPaymentProps> = ({
     }
     if (received < total) {
       alert("จำนวนเงินไม่พอชำระ (ยอดรวม " + total.toFixed(2) + " บาท)");
-      // ✅ เมื่อแจ้งเตือน ให้โฟกัสกลับที่ Input
       setTimeout(() => {
         cashInputRef.current?.focus();
         cashInputRef.current?.select();
@@ -215,72 +236,148 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   // ---------- quick amount buttons ----------
   const handleQuickAmount = (amount: string) => {
     setCashInput(amount);
-    // ✅ เมื่อกดปุ่ม Quick Amount ให้โฟกัสที่ Input และ select ข้อความ
     setTimeout(() => {
       cashInputRef.current?.focus();
       cashInputRef.current?.select();
     }, 50);
+    
+    // ✅ คำนวณและแสดง popup ทันทีเมื่อคลิกปุ่ม quick cash
+    const received = parseFloat(amount);
+    if (!isNaN(received) && received >= total) {
+      const change = received - total;
+      showPopup(change);
+    } else if (!isNaN(received) && received < total) {
+      alert("จำนวนเงินไม่พอชำระ (ยอดรวม " + total.toFixed(2) + " บาท)");
+    }
   };
 
-  // ---------- split bill (mixed payment) ----------
+  // ✅ Mixed payment functions
   const openSplitPopup = () => {
-    setSplitTransferInput("");
-    setSplitCashInput(total.toFixed(2));
+    setMixedPayments([{ id: "1", type: "cash", amount: total.toFixed(2) }]);
     setShowSplitPopup(true);
   };
 
   const closeSplitPopup = () => {
     setShowSplitPopup(false);
-    // ✅ เมื่อปิด popup แยกบิล ให้โฟกัสกลับที่ Input เงินสด
     setTimeout(() => {
       cashInputRef.current?.focus();
       cashInputRef.current?.select();
     }, 100);
   };
 
-  // เมื่อกรอกยอดโอน/พร้อมเพย์ ให้คำนวณส่วนที่เหลือเป็นเงินสดให้อัตโนมัติ
-  const handleSplitTransferChange = (value: string) => {
-    setSplitTransferInput(value);
-    const transferAmt = parseFloat(value) || 0;
-    const remaining = Math.max(total - transferAmt, 0);
-    setSplitCashInput(remaining.toFixed(2));
+  // ✅ Add new payment line
+  const addPaymentLine = () => {
+    const newId = (Math.max(...mixedPayments.map(p => parseInt(p.id) || 0)) + 1).toString();
+    setMixedPayments([...mixedPayments, { id: newId, type: "cash", amount: "0.00" }]);
   };
 
-  const handleSplitCashChange = (value: string) => {
-    setSplitCashInput(value);
+  // ✅ Remove payment line
+  const removePaymentLine = (id: string) => {
+    if (mixedPayments.length > 1) {
+      setMixedPayments(mixedPayments.filter(p => p.id !== id));
+    }
   };
 
-  const splitTransferAmt = parseFloat(splitTransferInput) || 0;
-  const splitCashAmt = parseFloat(splitCashInput) || 0;
-  const splitCombined = splitTransferAmt + splitCashAmt;
-  const splitChange = splitCombined - total;
-  const quickCashAmounts = getQuickCashAmounts(total);
-  const splitRemainingToAllocate = total - splitCombined;
-  const splitIsValid = splitTransferAmt > 0 && splitCashAmt >= 0 && splitCombined >= total - 0.005;
+  // ✅ Update payment line
+  const updatePaymentLine = (id: string, field: keyof MixedPaymentLine, value: any) => {
+    setMixedPayments(mixedPayments.map(p => 
+      p.id === id ? { ...p, [field]: value } : p
+    ));
+  };
 
-  const confirmSplitPayment = () => {
-    if (!splitIsValid) {
-      alert("ยอดชำระรวมยังไม่ครบ กรุณาตรวจสอบยอดเงินสดและยอดโอนอีกครั้ง");
+  // ✅ Calculate total from mixed payments
+  const calculateMixedTotal = (): number => {
+    return mixedPayments.reduce((sum, payment) => {
+      const amount = parseFloat(payment.amount) || 0;
+      return sum + amount;
+    }, 0);
+  };
+
+  // ✅ Check if mixed payment is valid
+  const isMixedPaymentValid = (): boolean => {
+    const combined = calculateMixedTotal();
+    return Math.abs(combined - total) < 0.01 && mixedPayments.every(p => parseFloat(p.amount) >= 0);
+  };
+
+  // ✅ Confirm mixed payment
+  const confirmMixedPayment = () => {
+    if (!isMixedPaymentValid()) {
+      alert("กรุณากรอกจำนวนเงินให้ครบถ้วน");
       return;
     }
+    
+    const change = calculateMixedTotal() - total;
+    console.log("✅ Mixed Payment Confirmed:", {
+      payments: mixedPayments,
+      total: calculateMixedTotal(),
+      change
+    });
+    
     closeSplitPopup();
-    showPopup(splitChange > 0 ? splitChange : 0);
+    if (Math.abs(change) < 0.01) {
+      showPopup(0);
+    } else {
+      showPopup(change);
+    }
   };
 
-  // ✅ Update cash input when total changes
+  // ✅ Generate QR for split bill transfer amount
   useEffect(() => {
-    setCashInput(total.toFixed(2));
-  }, [total]);
+    const generateSplitQr = async () => {
+      const transferLine = mixedPayments.find(p => p.type === "transfer");
+      const transferAmt = parseFloat(transferLine?.amount || "0");
+      
+      if (!storeData?.payment_account?.promptpay_id || transferAmt <= 0) {
+        setSplitQrDataUrl(null);
+        return;
+      }
 
-  // ✅ โฟกัสที่ Input เงินสดอัตโนมัติเมื่อ component ถูก mount
+      setSplitQrLoading(true);
+      try {
+        const dataUrl = await generatePromptPayQr(
+          storeData.payment_account.promptpay_id,
+          transferAmt,
+          splitQrCanvasRef
+        );
+        setSplitQrDataUrl(dataUrl);
+      } catch (error) {
+        console.error("❌ Split QR generation failed:", error);
+        setSplitQrDataUrl(null);
+      } finally {
+        setSplitQrLoading(false);
+      }
+    };
+
+    void generateSplitQr();
+  }, [mixedPayments, storeData?.payment_account?.promptpay_id]);
+
+  // ✅ Generate QR for transfer tab (full amount)
   useEffect(() => {
-    setTimeout(() => {
-      cashInputRef.current?.focus();
-      cashInputRef.current?.select();
-    }, 150);
-  }, []);
+    const generateTransferQr = async () => {
+      if (!storeData?.payment_account?.promptpay_id) {
+        setTransferQrDataUrl(null);
+        return;
+      }
 
-  // ✅ Load store settings
+      try {
+        const dataUrl = await generatePromptPayQr(
+          storeData.payment_account.promptpay_id,
+          total,
+          transferQrCanvasRef
+        );
+        setTransferQrDataUrl(dataUrl);
+      } catch (error) {
+        console.error("❌ Transfer QR generation failed:", error);
+        setTransferQrDataUrl(null);
+      }
+    };
+
+    if (activeTab === "transfer") {
+      void generateTransferQr();
+    }
+  }, [activeTab, storeData?.payment_account?.promptpay_id, total]);
+
+  // ✅ Load store settings - ใช้ /store/settings เหมือนเดิม
   useEffect(() => {
     let isMounted = true;
 
@@ -314,58 +411,27 @@ const POSPayment: React.FC<POSPaymentProps> = ({
     };
   }, []);
 
-  // ✅ Generate QR for split bill transfer amount
+  // ✅ Update cash input when total changes
   useEffect(() => {
-    const generateSplitQr = async () => {
-      if (!storeData?.payment_account.promptpay_id || splitTransferAmt <= 0) {
-        setSplitQrDataUrl(null);
-        return;
-      }
+    setCashInput(total.toFixed(2));
+  }, [total]);
 
-      setSplitQrLoading(true);
-      try {
-        const dataUrl = await generatePromptPayQr(
-          storeData.payment_account.promptpay_id,
-          splitTransferAmt,
-          splitQrCanvasRef
-        );
-        setSplitQrDataUrl(dataUrl);
-      } catch (error) {
-        console.error("❌ Split QR generation failed:", error);
-        setSplitQrDataUrl(null);
-      } finally {
-        setSplitQrLoading(false);
-      }
-    };
-
-    void generateSplitQr();
-  }, [splitTransferAmt, storeData?.payment_account.promptpay_id]);
-
-  // ✅ Generate QR for transfer tab (full amount)
+  // ✅ โฟกัสที่ Input เงินสดอัตโนมัติเมื่อ component ถูก mount
   useEffect(() => {
-    const generateTransferQr = async () => {
-      if (!storeData?.payment_account.promptpay_id) {
-        setTransferQrDataUrl(null);
-        return;
-      }
+    setTimeout(() => {
+      cashInputRef.current?.focus();
+      cashInputRef.current?.select();
+    }, 150);
+  }, []);
 
-      try {
-        const dataUrl = await generatePromptPayQr(
-          storeData.payment_account.promptpay_id,
-          total,
-          transferQrCanvasRef
-        );
-        setTransferQrDataUrl(dataUrl);
-      } catch (error) {
-        console.error("❌ Transfer QR generation failed:", error);
-        setTransferQrDataUrl(null);
-      }
-    };
-
-    if (activeTab === "transfer") {
-      void generateTransferQr();
+  // ✅ เมื่อ popup เปิด ให้โฟกัสที่ container เพื่อรับ event keyboard
+  useEffect(() => {
+    if (popupChange !== null) {
+      setTimeout(() => {
+        popupContainerRef.current?.focus();
+      }, 50);
     }
-  }, [activeTab, storeData?.payment_account.promptpay_id, total]);
+  }, [popupChange]);
 
   // ✅ Escape key handler
   useEffect(() => {
@@ -383,6 +449,10 @@ const POSPayment: React.FC<POSPaymentProps> = ({
       window.removeEventListener("keydown", handleEscape);
     };
   }, [onBack]);
+
+  const mixedCombined = calculateMixedTotal();
+  const mixedRemaining = total - mixedCombined;
+  const quickCashAmounts = getQuickCashAmounts(total);
 
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden", fontFamily: "'Sarabun', sans-serif" }}>
@@ -651,18 +721,24 @@ const POSPayment: React.FC<POSPaymentProps> = ({
                     padding: "14px 16px",
                   }}
                 >
-                  <span style={{ color: "var(--gray-500, #6b7785)", fontSize: 16 }}>฿</span>
+                  <span style={{ color: "var(--gray-500, #6b7785)", fontSize: 18 }}>฿</span>
                   <input
-                    ref={cashInputRef}  // ✅ เพิ่ม ref ที่นี่
+                    ref={cashInputRef}
                     type="text"
                     value={cashInput}
                     onChange={(e) => setCashInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        processCashPayment();
+                      }
+                    }}
                     placeholder="0.00"
                     style={{
                       border: "none",
                       outline: "none",
                       fontFamily: "'Sarabun', sans-serif",
-                      fontSize: 24,
+                      fontSize: 36,
                       fontWeight: 700,
                       width: "100%",
                       color: "var(--ink, #0b1726)",
@@ -721,7 +797,6 @@ const POSPayment: React.FC<POSPaymentProps> = ({
                 📱 โอนเงิน / PromptPay
               </div>
 
-              {/* ✅ QR Code Display */}
               {transferQrDataUrl ? (
                 <div
                   style={{
@@ -896,16 +971,13 @@ const POSPayment: React.FC<POSPaymentProps> = ({
         </div>
       </div>
 
-      {/* ---------- SPLIT BILL / MIXED PAYMENT POPUP ---------- */}
+      {/* ✅ MIXED PAYMENT POPUP - Click outside does NOT close */}
       {showSplitPopup && (
         <div
-          onClick={(e) => {
-            if (e.target === e.currentTarget) closeSplitPopup();
-          }}
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(0,0,0,0.45)",
+            background: "rgba(0,0,0,0.5)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -915,34 +987,44 @@ const POSPayment: React.FC<POSPaymentProps> = ({
           <div
             style={{
               background: "var(--white, #fff)",
-              padding: "32px 36px",
               borderRadius: 24,
-              maxWidth: 460,
-              width: "92%",
+              padding: "32px 36px",
+              width: "100%",
+              maxWidth: 500,
+              maxHeight: "90vh",
+              overflowY: "auto",
               boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
               animation: "popFade 0.25s ease",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
-              <h2 style={{ fontSize: 19, fontWeight: 700, color: "var(--ink, #0b1726)" }}>แยกบิล / ชำระแบบผสม</h2>
-              <button
-                type="button"
-                onClick={closeSplitPopup}
-                style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 8,
-                  border: "none",
-                  background: "var(--blue-100, #e8f0fe)",
-                  color: "var(--blue-700, #13315c)",
-                  fontSize: 16,
-                  cursor: "pointer",
-                }}
-              >
-                ✕
-              </button>
+            {/* Header */}
+            <div style={{ marginBottom: 20, paddingBottom: 16, borderBottom: "1px solid var(--gray-200, #e5e7eb)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                <h3 style={{ fontSize: 20, fontWeight: 700, color: "var(--ink, #0b1726)", margin: 0 }}>
+                  แยกบิล / ชำระแบบผสม
+                </h3>
+                <button
+                  onClick={closeSplitPopup}
+                  style={{
+                    background: "var(--blue-100, #e8f0fe)",
+                    border: "none",
+                    borderRadius: 8,
+                    width: 32,
+                    height: 32,
+                    fontSize: 16,
+                    cursor: "pointer",
+                    color: "var(--blue-700, #13315c)",
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+              <div style={{ fontSize: 13, color: "var(--gray-500, #6b7785)" }}>
+                เลือกวิธีชำระเงินและจำนวนสำหรับแต่ละวิธี
+              </div>
             </div>
 
+            {/* Total Amount */}
             <div style={{ textAlign: "center", marginBottom: 20 }}>
               <div style={{ fontSize: 13, color: "var(--gray-500, #6b7785)" }}>ยอดที่ต้องชำระทั้งหมด</div>
               <div style={{ fontFamily: "'Sarabun', sans-serif", fontSize: 32, fontWeight: 700, color: "var(--blue-700, #13315c)" }}>
@@ -950,148 +1032,173 @@ const POSPayment: React.FC<POSPaymentProps> = ({
               </div>
             </div>
 
-            {/* transfer / promptpay amount */}
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--blue-600, #1b4b8f)", marginBottom: 8 }}>
-                📱 โอน / พร้อมเพย์
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  background: "var(--white, #fff)",
-                  border: "1.5px solid var(--gray-300, #d7dee8)",
-                  borderRadius: 12,
-                  padding: "10px 14px",
-                }}
-              >
-                <span style={{ color: "var(--gray-500, #6b7785)" }}>฿</span>
-                <input
-                  type="text"
-                  value={splitTransferInput}
-                  onChange={(e) => handleSplitTransferChange(e.target.value)}
-                  placeholder="0.00"
-                  style={{
-                    border: "none",
-                    outline: "none",
-                    fontFamily: "'Sarabun', sans-serif",
-                    fontSize: 20,
-                    fontWeight: 700,
-                    width: "100%",
-                    color: "var(--ink, #0b1726)",
-                    background: "transparent",
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={() => handleSplitTransferChange(total.toFixed(2))}
-                  style={{
-                    background: "var(--blue-100, #e8f0fe)",
-                    color: "var(--blue-600, #1b4b8f)",
-                    border: "none",
-                    borderRadius: 8,
-                    padding: "6px 10px",
-                    fontSize: 12,
-                    fontWeight: 600,
-                    cursor: "pointer",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  เต็มยอด
-                </button>
-              </div>
-
-              {/* ✅ QR Code for split payment */}
-              {splitTransferAmt > 0 && (
+            {/* Payment Lines */}
+            <div style={{ marginBottom: 20 }}>
+              {mixedPayments.map((payment) => (
                 <div
+                  key={payment.id}
                   style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 14,
-                    marginTop: 12,
-                    padding: 14,
-                    border: "1px solid var(--gray-300, #d7dee8)",
-                    borderRadius: 14,
-                    background: "var(--blue-50, #f0f5ff)",
+                    background: "var(--gray-50, #f9fafb)",
+                    border: "1px solid var(--gray-200, #e5e7eb)",
+                    borderRadius: 12,
+                    padding: "14px",
+                    marginBottom: 12,
                   }}
                 >
+                  <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+                    <select
+                      value={payment.type}
+                      onChange={(e) => updatePaymentLine(payment.id, "type", e.target.value as PaymentMethodType)}
+                      style={{
+                        flex: 1,
+                        padding: "8px 12px",
+                        border: "1px solid var(--gray-300, #d7dee8)",
+                        borderRadius: 8,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: "var(--ink, #0b1726)",
+                        background: "var(--white, #fff)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <option value="cash">{getPaymentMethodLabel("cash")}</option>
+                      <option value="transfer">{getPaymentMethodLabel("transfer")}</option>
+                      <option value="gov_welfare">{getPaymentMethodLabel("gov_welfare")}</option>
+                      <option value="khon_la_krueng">{getPaymentMethodLabel("khon_la_krueng")}</option>
+                      <option value="digital_money">{getPaymentMethodLabel("digital_money")}</option>
+                      <option value="other">{getPaymentMethodLabel("other")}</option>
+                    </select>
+
+                    {mixedPayments.length > 1 && (
+                      <button
+                        onClick={() => removePaymentLine(payment.id)}
+                        style={{
+                          background: "#fee2e2",
+                          border: "1px solid #fca5a5",
+                          borderRadius: 8,
+                          padding: "6px 8px",
+                          fontSize: 16,
+                          cursor: "pointer",
+                          color: "#dc2626",
+                        }}
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+
                   <div
                     style={{
-                      width: 88,
-                      height: 88,
-                      borderRadius: 10,
-                      overflow: "hidden",
-                      flexShrink: 0,
-                      background: "#fff",
-                      border: "1px solid var(--gray-300, #d7dee8)",
                       display: "flex",
                       alignItems: "center",
-                      justifyContent: "center",
+                      gap: 10,
+                      background: "var(--white, #fff)",
+                      border: "1.5px solid var(--gray-300, #d7dee8)",
+                      borderRadius: 8,
+                      padding: "8px 12px",
                     }}
                   >
-                    {splitQrLoading ? (
-                      <span style={{ fontSize: 12, color: "var(--gray-500, #6b7785)" }}>⏳</span>
-                    ) : splitQrDataUrl ? (
-                      <img
-                        src={splitQrDataUrl}
-                        alt="PromptPay QR"
-                        style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                      />
-                    ) : null}
+                    <span style={{ color: "var(--gray-500, #6b7785)", fontWeight: 600 }}>฿</span>
+                    <input
+                      type="text"
+                      value={payment.amount}
+                      onChange={(e) => updatePaymentLine(payment.id, "amount", e.target.value)}
+                      placeholder="0.00"
+                      style={{
+                        border: "none",
+                        outline: "none",
+                        fontFamily: "'Sarabun', sans-serif",
+                        fontSize: 16,
+                        fontWeight: 700,
+                        width: "100%",
+                        color: "var(--ink, #0b1726)",
+                        background: "transparent",
+                      }}
+                    />
                   </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700 }}>
-                      {storeData?.payment_account.account_holder || storeData?.store.store_name || "ร้านค้า"}
+
+                  {/* ✅ Show QR Code for transfer method */}
+                  {payment.type === "transfer" && parseFloat(payment.amount) > 0 && (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 14,
+                        marginTop: 10,
+                        padding: 12,
+                        border: "1px solid var(--gray-300, #d7dee8)",
+                        borderRadius: 10,
+                        background: "var(--blue-50, #f0f5ff)",
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 72,
+                          height: 72,
+                          borderRadius: 8,
+                          overflow: "hidden",
+                          flexShrink: 0,
+                          background: "#fff",
+                          border: "1px solid var(--gray-300, #d7dee8)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        {splitQrLoading ? (
+                          <span style={{ fontSize: 12, color: "var(--gray-500, #6b7785)" }}>⏳</span>
+                        ) : splitQrDataUrl ? (
+                          <img
+                            src={splitQrDataUrl}
+                            alt="PromptPay QR"
+                            style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                          />
+                        ) : null}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700 }}>
+                          {storeData?.payment_account.account_holder || storeData?.store.store_name || "ร้านค้า"}
+                        </div>
+                        <div style={{ fontSize: 10, color: "var(--gray-500, #6b7785)" }}>
+                          PromptPay: {storeData?.payment_account.promptpay_id || "-"}
+                        </div>
+                        <div style={{ fontFamily: "'Sarabun', sans-serif", fontSize: 14, fontWeight: 700, color: "var(--blue-700, #13315c)", marginTop: 2 }}>
+                          {formatBaht(parseFloat(payment.amount) || 0)}
+                        </div>
+                      </div>
                     </div>
-                    <div style={{ fontSize: 11, color: "var(--gray-500, #6b7785)" }}>
-                      PromptPay: {storeData?.payment_account.promptpay_id || "-"}
-                    </div>
-                    <div style={{ fontFamily: "'Sarabun', sans-serif", fontSize: 15, fontWeight: 700, color: "var(--blue-700, #13315c)", marginTop: 2 }}>
-                      {formatBaht(splitTransferAmt)}
-                    </div>
-                  </div>
+                  )}
                 </div>
-              )}
+              ))}
             </div>
 
-            {/* cash amount */}
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--blue-600, #1b4b8f)", marginBottom: 8 }}>
-                💵 เงินสด
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  background: "var(--white, #fff)",
-                  border: "1.5px solid var(--gray-300, #d7dee8)",
-                  borderRadius: 12,
-                  padding: "10px 14px",
-                }}
-              >
-                <span style={{ color: "var(--gray-500, #6b7785)" }}>฿</span>
-                <input
-                  type="text"
-                  value={splitCashInput}
-                  onChange={(e) => handleSplitCashChange(e.target.value)}
-                  placeholder="0.00"
-                  style={{
-                    border: "none",
-                    outline: "none",
-                    fontFamily: "'Sarabun', sans-serif",
-                    fontSize: 20,
-                    fontWeight: 700,
-                    width: "100%",
-                    color: "var(--ink, #0b1726)",
-                    background: "transparent",
-                  }}
-                />
-              </div>
-            </div>
+            {/* Add Payment Line Button */}
+            <button
+              onClick={addPaymentLine}
+              style={{
+                width: "100%",
+                background: "var(--gray-100, #f3f4f6)",
+                border: "2px dashed var(--blue-600, #1b4b8f)",
+                borderRadius: 12,
+                padding: "12px 16px",
+                fontSize: 14,
+                fontWeight: 600,
+                color: "var(--blue-600, #1b4b8f)",
+                cursor: "pointer",
+                marginBottom: 20,
+                transition: "all 0.15s ease",
+              }}
+              onMouseEnter={(e) => {
+                (e.target as HTMLButtonElement).style.background = "var(--blue-50, #f0f5ff)";
+              }}
+              onMouseLeave={(e) => {
+                (e.target as HTMLButtonElement).style.background = "var(--gray-100, #f3f4f6)";
+              }}
+            >
+              ➕ เพิ่มวิธีชำระเงิน
+            </button>
 
-            {/* summary */}
+            {/* Summary */}
             <div
               style={{
                 background: "var(--blue-100, #e8f0fe)",
@@ -1103,50 +1210,55 @@ const POSPayment: React.FC<POSPaymentProps> = ({
             >
               <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: "var(--blue-700, #13315c)" }}>
                 <span>ยอดรวมที่กรอก</span>
-                <span style={{ fontWeight: 700 }}>{formatBaht(splitCombined)}</span>
+                <span style={{ fontWeight: 700 }}>{formatBaht(mixedCombined)}</span>
               </div>
-              {splitRemainingToAllocate > 0.004 ? (
-                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#dc2626" }}>
-                  <span>ยังขาดอีก</span>
-                  <span style={{ fontWeight: 700 }}>{formatBaht(splitRemainingToAllocate)}</span>
-                </div>
+              {Math.abs(mixedRemaining) > 0.004 ? (
+                mixedRemaining > 0 ? (
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#dc2626" }}>
+                    <span>ยังขาดอีก</span>
+                    <span style={{ fontWeight: 700 }}>{formatBaht(mixedRemaining)}</span>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#16a34a" }}>
+                    <span>เงินทอน</span>
+                    <span style={{ fontWeight: 700 }}>{formatBaht(-mixedRemaining)}</span>
+                  </div>
+                )
               ) : (
                 <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#16a34a" }}>
-                  <span>เงินทอน</span>
-                  <span style={{ fontWeight: 700 }}>{formatBaht(Math.max(splitChange, 0))}</span>
+                  <span>✓ จำนวนเงินถูกต้อง</span>
                 </div>
               )}
             </div>
 
+            {/* Confirm Button */}
             <button
-              type="button"
-              onClick={confirmSplitPayment}
-              disabled={!splitIsValid}
+              onClick={confirmMixedPayment}
+              disabled={!isMixedPaymentValid()}
               style={{
                 width: "100%",
-                background: splitIsValid ? "var(--blue-600, #1b4b8f)" : "var(--gray-300, #d7dee8)",
+                background: isMixedPaymentValid() ? "var(--blue-600, #1b4b8f)" : "var(--gray-300, #d7dee8)",
                 color: "#fff",
                 border: "none",
                 borderRadius: 14,
                 padding: 16,
                 fontSize: 15,
                 fontWeight: 700,
-                cursor: splitIsValid ? "pointer" : "not-allowed",
+                cursor: isMixedPaymentValid() ? "pointer" : "not-allowed",
                 transition: "background 0.15s ease",
               }}
             >
-              ยืนยันการชำระเงินแบบผสม
+              ✓ ยืนยันการชำระเงินแบบผสม
             </button>
           </div>
         </div>
       )}
 
-      {/* ---------- PAYMENT SUCCESS POPUP ---------- */}
+      {/* ---------- PAYMENT SUCCESS POPUP - Click outside does NOT close, press Enter to close ---------- */}
       {popupChange !== null && (
         <div
-          onClick={(e) => {
-            if (e.target === e.currentTarget) closePopup();
-          }}
+          ref={popupContainerRef}
+          tabIndex={-1}
           style={{
             position: "fixed",
             inset: 0,
@@ -1155,6 +1267,13 @@ const POSPayment: React.FC<POSPaymentProps> = ({
             alignItems: "center",
             justifyContent: "center",
             zIndex: 999,
+            outline: "none",
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              confirmSuccessfulPayment();
+            }
           }}
         >
           <div
@@ -1171,18 +1290,34 @@ const POSPayment: React.FC<POSPaymentProps> = ({
           >
             <div style={{ fontSize: 54, marginBottom: 8 }}>🧾</div>
             <h2 style={{ fontSize: 22, color: "var(--ink, #0b1726)", marginBottom: 12 }}>ชำระเงินสำเร็จ</h2>
-            <div style={{ color: "var(--gray-500, #6b7785)", fontSize: 16, marginBottom: 22 }}>เงินทอน</div>
-            <div
-              style={{
-                fontFamily: "'Sarabun', sans-serif",
-                fontSize: 52,
-                fontWeight: 700,
-                color: "#16a34a",
-                margin: "12px 0 18px",
-              }}
-            >
-              ฿{popupChange.toFixed(2)}
-            </div>
+            {popupChange > 0 ? (
+              <>
+                <div style={{ color: "var(--gray-500, #6b7785)", fontSize: 16, marginBottom: 22 }}>เงินทอน</div>
+                <div
+                  style={{
+                    fontFamily: "'Sarabun', sans-serif",
+                    fontSize: 62,
+                    fontWeight: 700,
+                    color: "#16a34a",
+                    margin: "12px 0 18px",
+                  }}
+                >
+                  ฿{popupChange.toFixed(2)}
+                </div>
+              </>
+            ) : (
+              <div
+                style={{
+                  fontFamily: "'Sarabun', sans-serif",
+                  fontSize: 62,
+                  fontWeight: 700,
+                  color: "#16a34a",
+                  margin: "12px 0 18px",
+                }}
+              >
+                ✓
+              </div>
+            )}
             <div style={{ marginTop: 6, fontSize: 13, color: "var(--gray-500, #6b7785)" }}>ยอดรวม {formatBaht(total)}</div>
             <br />
             <button
@@ -1200,7 +1335,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
                 transition: "background 0.15s ease",
               }}
             >
-              OK
+              ตกลง
             </button>
           </div>
         </div>

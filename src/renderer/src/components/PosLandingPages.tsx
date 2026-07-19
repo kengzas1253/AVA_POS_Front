@@ -991,6 +991,7 @@ export default function PosLandingPages() {
             item.product_name ?? item.name,
             item.qty,
             item.unit_price ?? item.price ?? item.sale_price ?? 0,
+            item.discount ?? 0,
           ].join(":"),
         )
         .join("|"),
@@ -1110,9 +1111,28 @@ export default function PosLandingPages() {
           return;
         }
 
+        const promotionDiscountTotal = Number(result.discount_total ?? 0) || 0;
+        const manualDiscountTotal = cart.reduce((sum, item) => {
+          const lineTotal =
+            (Number(item.qty) || 0) *
+            (Number(item.unit_price ?? item.price ?? item.sale_price ?? 0) || 0);
+          const manualDiscount = Math.min(
+            Math.max(Number(item.discount ?? 0) || 0, 0),
+            lineTotal,
+          );
+
+          return sum + manualDiscount;
+        }, 0);
+
         setPromotionSubtotal(Number(result.subtotal ?? normalSubTotal) || 0);
-        setDiscountTotal(Number(result.discount_total ?? 0) || 0);
-        setGrandTotal(Number(result.grand_total ?? normalSubTotal) || 0);
+        setDiscountTotal(promotionDiscountTotal + manualDiscountTotal);
+        setGrandTotal(
+          Math.max(
+            (Number(result.grand_total ?? normalSubTotal) || 0) -
+              manualDiscountTotal,
+            0,
+          ),
+        );
         setAppliedPromotions(result.applied_promotions ?? []);
 
         const calculatedItems = result.items ?? [];
@@ -1123,8 +1143,8 @@ export default function PosLandingPages() {
               (promotionItem) =>
                 Number(promotionItem.product_id) === Number(productId),
             );
-            const discountAmount = Number(calculated?.discount_amount ?? 0) || 0;
-            const finalPrice =
+            const promotionDiscountAmount = Number(calculated?.discount_amount ?? 0) || 0;
+            const promotionFinalPrice =
               Number(
                 calculated?.final_price ??
                   item.final_price ??
@@ -1133,6 +1153,15 @@ export default function PosLandingPages() {
                   item.sale_price ??
                   0,
               ) || 0;
+            const lineTotal =
+              (Number(item.qty) || 0) *
+              (Number(item.unit_price ?? item.price ?? item.sale_price ?? 0) || 0);
+            const manualDiscountAmount = Math.min(
+              Math.max(Number(item.discount ?? 0) || 0, 0),
+              lineTotal,
+            );
+            const discountAmount = promotionDiscountAmount + manualDiscountAmount;
+            const finalPrice = Math.max(promotionFinalPrice - manualDiscountAmount, 0);
 
             return {
               ...item,
@@ -2348,6 +2377,7 @@ export default function PosLandingPages() {
   useEffect(() => {
     const handleKeyboardShortcut = (event: KeyboardEvent) => {
       const isTyping = isEditableKeyboardTarget(event.target);
+      const isBarcodeScannerInput = event.target === barcodeInputRef.current;
 
       // ถ้า Popup ยืนยันการลบเปิดอยู่ ให้ข้ามการทำงานทั้งหมด
       if (showClearConfirm) {
@@ -2408,15 +2438,15 @@ export default function PosLandingPages() {
         return;
       }
 
-      if (isTyping) {
-        return;
-      }
-
       if (event.key === "F4") {
         event.preventDefault();
         if (cart.length > 0) {
           setCurrentPage("posPayment");
         }
+        return;
+      }
+
+      if (isTyping && !isBarcodeScannerInput) {
         return;
       }
 
@@ -2521,7 +2551,19 @@ export default function PosLandingPages() {
         <Sidebar
           isOpen={sidebarOpen}
           onToggle={() => setSidebarOpen((value) => !value)}
-          onNavigate={(page) => setCurrentPage(page === "products" ? "productList" : page)}
+          onNavigate={(page) => {
+            if (page === "products") {
+              setCurrentPage("productList");
+              return;
+            }
+
+            if (page === "settings") {
+              setCurrentPage("storeInfo");
+              return;
+            }
+
+            setCurrentPage(page);
+          }}
           currentPage={currentPage}
           storeName={displayStoreName}
         />

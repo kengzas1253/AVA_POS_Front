@@ -94,7 +94,7 @@ export default function SidebarProduct({
         {/* แสดง Title ของเมนูที่ถูกเลือก */}
         {isOpen && currentTitle && (
           <div className="px-4 py-3 border-b border-white/10">
-            <h2 className="text-sm font-medium text-white/70 truncate">
+            <h2 className="text-base font-medium text-white/70 truncate">
               {currentTitle}
             </h2>
           </div>
@@ -111,13 +111,14 @@ export default function SidebarProduct({
                   <button
                     type="button"
                     onClick={() => onNavigate(item.id)}
-                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200 ${
+                    title={item.title}
+                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-base font-medium transition-all duration-200 ${
                       isActive
                         ? "bg-white/25 text-white shadow-lg"
                         : "text-white/80 hover:bg-white/15 hover:text-white"
                     }`}
                   >
-                    <Icon size={20} className="shrink-0" />
+                    <Icon size={24} className="shrink-0" />
                     {isOpen ? <span className="truncate">{item.label}</span> : null}
                   </button>
                 </li>
@@ -136,7 +137,7 @@ export default function SidebarProduct({
               <button
                 type="button"
                 onClick={handleGoBack}
-                className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200 text-white/80 hover:bg-white/15 hover:text-white ${
+                className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-base font-medium transition-all duration-200 text-white/80 hover:bg-white/15 hover:text-white ${
                   isOpen ? "justify-start" : "justify-center"
                 }`}
                 title="ย้อนกลับไปหน้าแรก"

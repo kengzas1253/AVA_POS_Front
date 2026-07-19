@@ -54,6 +54,77 @@ interface BarcodePrintSetting {
   [key: string]: unknown;
 }
 
+interface PosMachineSetting {
+  id?: number;
+  machineId?: string;
+  machine_id?: string;
+  a4PrinterName?: string | null;
+  a4_printer_name?: string | null;
+  a4Copies?: number;
+  a4_copies?: number;
+  receiptPrinterName?: string | null;
+  receipt_printer_name?: string | null;
+  receiptPaperSize?: string | null;
+  receipt_paper_size?: string | null;
+  receiptFontSize?: number;
+  receipt_font_size?: number;
+  receiptFontFamily?: string | null;
+  receipt_font_family?: string | null;
+  receiptCopies?: number;
+  receipt_copies?: number;
+  autoPrintReceipt?: boolean;
+  auto_print_receipt?: boolean;
+  autoOpenCashDrawer?: boolean;
+  auto_open_cash_drawer?: boolean;
+  labelPrinterName?: string | null;
+  label_printer_name?: string | null;
+  labelWidthMm?: number;
+  label_width_mm?: number;
+  labelHeightMm?: number;
+  label_height_mm?: number;
+  customerDisplayEnabled?: boolean;
+  customer_display_enabled?: boolean;
+  customerDisplayMonitor?: string | null;
+  customer_display_monitor?: string | null;
+  barcodeScannerEnabled?: boolean;
+  barcode_scanner_enabled?: boolean;
+  allowBelowCost?: boolean;
+  allow_below_cost?: boolean;
+  minProfitAmount?: string | number;
+  min_profit_amount?: string | number;
+  requireManagerApproval?: boolean;
+  require_manager_approval?: boolean;
+  managerPinRequired?: boolean;
+  manager_pin_required?: boolean;
+  language?: string;
+  theme?: string;
+  [key: string]: unknown;
+}
+
+interface PosMachineSettingPayload {
+  receipt_printer_name: string;
+  receipt_paper_size: string;
+  receipt_font_size: number;
+  receipt_font_family: string;
+  receipt_copies: number;
+  auto_print_receipt: boolean;
+  auto_open_cash_drawer: boolean;
+  a4_printer_name: string;
+  a4_copies: number;
+  label_printer_name: string | null;
+  label_width_mm: number;
+  label_height_mm: number;
+  customer_display_enabled: boolean;
+  customer_display_monitor: string | null;
+  barcode_scanner_enabled: boolean;
+  allow_below_cost: boolean;
+  min_profit_amount: number;
+  require_manager_approval: boolean;
+  manager_pin_required: boolean;
+  language: string;
+  theme: string;
+}
+
 type SaveTarget = "a4" | "slip" | "barcode";
 
 const slipPaperSizes = [
@@ -87,10 +158,79 @@ const barcodeLabelCounts = [1, 2, 3, 4, 5, 6];
 
 const normalizeApiBase = (value: string): string => value.trim().replace(/\/+$/, "");
 
+const isUuid = (value: string): boolean =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+
 const getStoredDevice = (value: unknown): PosDevice | null => {
   if (!value || typeof value !== "object") return null;
   const device = value as PosDevice;
   return device.machine_id ? device : device.pos_device ?? null;
+};
+
+const updateStoredA4PrinterName = (
+  value: unknown,
+  currentMachineId: string,
+  printerName: string,
+): PosDevice => {
+  if (value && typeof value === "object") {
+    const storedDevice = value as PosDevice;
+    if (storedDevice.pos_device) {
+      return {
+        ...storedDevice,
+        pos_device: {
+          ...storedDevice.pos_device,
+          printer_name: printerName,
+        },
+      };
+    }
+
+    return {
+      ...storedDevice,
+      printer_name: printerName,
+    };
+  }
+
+  return {
+    machine_id: currentMachineId,
+    printer_name: printerName,
+  };
+};
+
+const updateStoredSlipPrinter = (
+  value: unknown,
+  currentMachineId: string,
+  printerName: string,
+  paperSize: string,
+): PosDevice => {
+  const slipFields = {
+    printer_slip: printerName,
+    printer_slip_name: printerName,
+    paper_slip_size: paperSize,
+    printer_slip_paper_size: paperSize,
+  };
+
+  if (value && typeof value === "object") {
+    const storedDevice = value as PosDevice;
+    if (storedDevice.pos_device) {
+      return {
+        ...storedDevice,
+        pos_device: {
+          ...storedDevice.pos_device,
+          ...slipFields,
+        },
+      };
+    }
+
+    return {
+      ...storedDevice,
+      ...slipFields,
+    };
+  }
+
+  return {
+    machine_id: currentMachineId,
+    ...slipFields,
+  };
 };
 
 const unwrapObject = <T,>(payload: unknown): T | null => {
@@ -98,9 +238,6 @@ const unwrapObject = <T,>(payload: unknown): T | null => {
   const value = payload as { data?: unknown; setting?: unknown; barcode_print_setting?: unknown };
   return ((value.data || value.setting || value.barcode_print_setting || value) as T) ?? null;
 };
-
-const getA4PrinterName = (posDevice?: PosDevice | null): string =>
-  String(posDevice?.printer_name || posDevice?.printer_a4_name || "");
 
 const getSlipPrinterName = (posDevice?: PosDevice | null): string =>
   String(posDevice?.printer_slip || posDevice?.printer_slip_name || "");
@@ -113,6 +250,120 @@ const getBarcodePaperSizeLabel = (value: string): string =>
 
 const getBarcodeCodeTypeLabel = (value: string): string =>
   barcodeCodeTypes.find((type) => type.value === value)?.label || value;
+
+const getStringValue = (value: unknown, fallback: string): string =>
+  typeof value === "string" && value.trim() ? value : fallback;
+
+const getNumberValue = (value: unknown, fallback: number): number => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+  return fallback;
+};
+
+const getBooleanValue = (value: unknown, fallback: boolean): boolean =>
+  typeof value === "boolean" ? value : fallback;
+
+const getNullableStringValue = (value: unknown): string | null =>
+  typeof value === "string" && value.trim() ? value : null;
+
+const buildPosMachineSettingPayload = ({
+  setting,
+  selectedA4Printer,
+  selectedSlipPrinter,
+  selectedSlipPaperSize,
+}: {
+  setting: PosMachineSetting | null;
+  selectedA4Printer: string;
+  selectedSlipPrinter: string;
+  selectedSlipPaperSize: string;
+}): PosMachineSettingPayload => ({
+  receipt_printer_name: selectedSlipPrinter,
+  receipt_paper_size: selectedSlipPaperSize,
+  receipt_font_size: getNumberValue(
+    setting?.receipt_font_size ?? setting?.receiptFontSize,
+    14,
+  ),
+  receipt_font_family: getStringValue(
+    setting?.receipt_font_family ?? setting?.receiptFontFamily,
+    "TH Sarabun New",
+  ),
+  receipt_copies: getNumberValue(setting?.receipt_copies ?? setting?.receiptCopies, 1),
+  auto_print_receipt: getBooleanValue(
+    setting?.auto_print_receipt ?? setting?.autoPrintReceipt,
+    true,
+  ),
+  auto_open_cash_drawer: getBooleanValue(
+    setting?.auto_open_cash_drawer ?? setting?.autoOpenCashDrawer,
+    true,
+  ),
+  a4_printer_name: selectedA4Printer,
+  a4_copies: getNumberValue(setting?.a4_copies ?? setting?.a4Copies, 1),
+  label_printer_name: getNullableStringValue(
+    setting?.label_printer_name ?? setting?.labelPrinterName,
+  ),
+  label_width_mm: getNumberValue(setting?.label_width_mm ?? setting?.labelWidthMm, 50),
+  label_height_mm: getNumberValue(setting?.label_height_mm ?? setting?.labelHeightMm, 30),
+  customer_display_enabled: getBooleanValue(
+    setting?.customer_display_enabled ?? setting?.customerDisplayEnabled,
+    false,
+  ),
+  customer_display_monitor: getNullableStringValue(
+    setting?.customer_display_monitor ?? setting?.customerDisplayMonitor,
+  ),
+  barcode_scanner_enabled: getBooleanValue(
+    setting?.barcode_scanner_enabled ?? setting?.barcodeScannerEnabled,
+    true,
+  ),
+  allow_below_cost: getBooleanValue(setting?.allow_below_cost ?? setting?.allowBelowCost, true),
+  min_profit_amount: getNumberValue(setting?.min_profit_amount ?? setting?.minProfitAmount, 1),
+  require_manager_approval: getBooleanValue(
+    setting?.require_manager_approval ?? setting?.requireManagerApproval,
+    true,
+  ),
+  manager_pin_required: getBooleanValue(
+    setting?.manager_pin_required ?? setting?.managerPinRequired,
+    true,
+  ),
+  language: getStringValue(setting?.language, "th"),
+  theme: getStringValue(setting?.theme, "light"),
+});
+
+const hasA4MachineSettingData = (payload: unknown): payload is PosMachineSetting => {
+  if (!payload || typeof payload !== "object") return false;
+
+  const value = payload as PosMachineSetting & {
+    status?: string;
+    success?: boolean;
+  };
+
+  if (value.success === false) return false;
+  if (typeof value.status === "string" && ["not_found", "error", "fail"].includes(value.status.toLowerCase())) {
+    return false;
+  }
+
+  return Boolean(
+    value.id ||
+      value.machineId ||
+      value.machine_id ||
+      value.a4PrinterName ||
+      value.a4_printer_name ||
+      value.receiptPrinterName ||
+      value.receipt_printer_name ||
+      value.receiptPaperSize ||
+      value.receipt_paper_size,
+  );
+};
+
+const readA4MachineSettingResponse = async (
+  response: Response,
+): Promise<PosMachineSetting | null> => {
+  const payload = await response.json().catch(() => null);
+  const setting = unwrapObject<PosMachineSetting>(payload);
+  return hasA4MachineSettingData(setting) ? setting : null;
+};
 
 const hasBarcodeSettingData = (payload: unknown): payload is BarcodePrintSetting => {
   if (!payload || typeof payload !== "object") return false;
@@ -168,8 +419,13 @@ export default function PrinterSetting() {
   const [device, setDevice] = useState<PosDevice | null>(null);
   const [printers, setPrinters] = useState<PrinterDriver[]>([]);
   const [a4Printer, setA4Printer] = useState("");
+  const [currentA4Printer, setCurrentA4Printer] = useState("");
+  const [a4SettingExists, setA4SettingExists] = useState(false);
+  const [a4MachineSetting, setA4MachineSetting] = useState<PosMachineSetting | null>(null);
   const [slipPrinter, setSlipPrinter] = useState("");
   const [slipPaperSize, setSlipPaperSize] = useState(slipPaperSizes[1].value);
+  const [currentSlipPrinter, setCurrentSlipPrinter] = useState("");
+  const [currentSlipPaperSize, setCurrentSlipPaperSize] = useState("");
   const [barcodePrinter, setBarcodePrinter] = useState("");
   const [currentBarcodePrinter, setCurrentBarcodePrinter] = useState("");
   const [currentBarcodePaperSize, setCurrentBarcodePaperSize] = useState("");
@@ -216,7 +472,7 @@ export default function PrinterSetting() {
     }
   };
 
-  const getBarcodeAccessToken = async (): Promise<string> => {
+  const getAccessToken = async (): Promise<string> => {
     if (!(await ensureValidAccessToken())) {
       throw new Error("ไม่สามารถยืนยันตัวตนได้ กรุณาเข้าสู่ระบบใหม่");
     }
@@ -240,6 +496,77 @@ export default function PrinterSetting() {
         Authorization: `Bearer ${token}`,
       },
     });
+
+  const requestA4MachineSetting = async (
+    token: string,
+    init?: RequestInit,
+  ): Promise<Response> =>
+    fetch(`${apiBaseUrl}/pos-machine-settings/machine/${encodeURIComponent(machineId)}`, {
+      ...init,
+      headers: {
+        ...(init?.headers || {}),
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+  const loadA4MachineSetting = async (
+    baseUrl: string,
+    currentMachineId: string,
+  ): Promise<void> => {
+    if (!(await ensureValidAccessToken())) return;
+
+    let token = await window.electronStore.get(ACCESS_TOKEN_KEY);
+    if (typeof token !== "string" || !token.trim()) return;
+
+    const endpoint = `${baseUrl}/pos-machine-settings/machine/${encodeURIComponent(currentMachineId)}`;
+    let response = await fetch(endpoint, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (response.status === 401) {
+      token = await refreshAccessToken();
+      response = await fetch(endpoint, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    }
+
+    if (response.status === 404) {
+      setA4SettingExists(false);
+      setA4MachineSetting(null);
+      setCurrentA4Printer("");
+      setA4Printer("");
+      setCurrentSlipPrinter("");
+      setCurrentSlipPaperSize("");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(await getApiErrorMessage(response, `โหลดค่า Printer A4 ไม่สำเร็จ (${response.status})`));
+    }
+
+    const setting = await readA4MachineSettingResponse(response);
+    if (!setting) {
+      setA4SettingExists(false);
+      setA4MachineSetting(null);
+      setCurrentA4Printer("");
+      setA4Printer("");
+      setCurrentSlipPrinter("");
+      setCurrentSlipPaperSize("");
+      return;
+    }
+
+    const printerName = setting.a4_printer_name || setting.a4PrinterName || "";
+    const receiptPrinterName = setting.receipt_printer_name || setting.receiptPrinterName || "";
+    const receiptPaperSize = setting.receipt_paper_size || setting.receiptPaperSize || "";
+    setA4SettingExists(true);
+    setA4MachineSetting(setting);
+    setCurrentA4Printer(printerName);
+    setA4Printer(printerName);
+    setCurrentSlipPrinter(receiptPrinterName);
+    setCurrentSlipPaperSize(receiptPaperSize);
+    setSlipPrinter(receiptPrinterName);
+    setSlipPaperSize(receiptPaperSize || slipPaperSizes[1].value);
+  };
 
   const loadBarcodeSetting = async (baseUrl: string, currentMachineId: string) => {
     if (!(await ensureValidAccessToken())) return;
@@ -326,7 +653,7 @@ export default function PrinterSetting() {
 
       const drivers = await loadPrinters();
       const fallbackPrinter = drivers[0]?.name || "";
-      setA4Printer(getA4PrinterName(storedPosDevice) || fallbackPrinter);
+      setA4Printer("");
       setSlipPrinter(getSlipPrinterName(storedPosDevice) || fallbackPrinter);
       setSlipPaperSize(getSlipPaperSize(storedPosDevice) || slipPaperSizes[1].value);
       setBarcodePrinter((current) => current || fallbackPrinter);
@@ -346,11 +673,11 @@ export default function PrinterSetting() {
       };
 
       setDevice(matchedDevice);
-      setA4Printer(getA4PrinterName(matchedDevice) || fallbackPrinter);
       setSlipPrinter(getSlipPrinterName(matchedDevice) || fallbackPrinter);
       setSlipPaperSize(getSlipPaperSize(matchedDevice) || slipPaperSizes[1].value);
       setBarcodePrinter((current) => current || fallbackPrinter);
 
+      await loadA4MachineSetting(baseUrl, currentMachineId);
       await loadBarcodeSetting(baseUrl, currentMachineId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "โหลดการตั้งค่าเครื่องพิมพ์ไม่สำเร็จ");
@@ -404,6 +731,161 @@ export default function PrinterSetting() {
     setDevice(updatedDevice);
   };
 
+  const saveA4MachineSetting = async () => {
+    if (!a4Printer) throw new Error("กรุณาเลือกเครื่องพิมพ์");
+    if (!isUuid(machineId)) throw new Error("machine_id ต้องเป็น UUID");
+
+    let token = await getAccessToken();
+    let checkResponse = await requestA4MachineSetting(token);
+    if (checkResponse.status === 401) {
+      token = await refreshAccessToken();
+      checkResponse = await requestA4MachineSetting(token);
+    }
+
+    let exists = a4SettingExists;
+    let currentSetting = a4MachineSetting;
+    if (checkResponse.status === 404) {
+      exists = false;
+      currentSetting = null;
+    } else if (checkResponse.ok) {
+      const existingSetting = await readA4MachineSettingResponse(checkResponse);
+      exists = Boolean(existingSetting);
+      currentSetting = existingSetting;
+    } else {
+      throw new Error(await getApiErrorMessage(checkResponse, `ตรวจสอบค่า Printer A4 ไม่สำเร็จ (${checkResponse.status})`));
+    }
+
+    const endpoint = exists
+      ? `${apiBaseUrl}/pos-machine-settings/machine/${encodeURIComponent(machineId)}`
+      : `${apiBaseUrl}/pos-machine-settings`;
+    const method = exists ? "PUT" : "POST";
+    const payload = buildPosMachineSettingPayload({
+      setting: currentSetting,
+      selectedA4Printer: a4Printer,
+      selectedSlipPrinter: currentSetting?.receipt_printer_name || currentSetting?.receiptPrinterName || currentSlipPrinter,
+      selectedSlipPaperSize:
+        currentSetting?.receipt_paper_size ||
+        currentSetting?.receiptPaperSize ||
+        currentSlipPaperSize ||
+        slipPaperSizes[1].value,
+    });
+    const requestPayload = exists ? payload : { machine_id: machineId, ...payload };
+
+    let response = await fetch(endpoint, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestPayload),
+    });
+
+    if (response.status === 401) {
+      token = await refreshAccessToken();
+      response = await fetch(endpoint, {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestPayload),
+      });
+    }
+
+    if (!response.ok) {
+      throw new Error(await getApiErrorMessage(response, `บันทึกค่า Printer A4 ไม่สำเร็จ (${response.status})`));
+    }
+
+    setA4SettingExists(true);
+    setA4MachineSetting({
+      ...(currentSetting || {}),
+      machineId,
+      machine_id: machineId,
+      ...payload,
+    });
+    const storedDevice = await window.electronStore.get(POS_DEVICE_KEY);
+    const updatedStoredDevice = updateStoredA4PrinterName(storedDevice, machineId, a4Printer);
+    await window.electronStore.set(POS_DEVICE_KEY, updatedStoredDevice);
+    setDevice(getStoredDevice(updatedStoredDevice) || updatedStoredDevice);
+    setCurrentA4Printer(a4Printer);
+  };
+
+  const saveSlipMachineSetting = async () => {
+    if (!slipPrinter) throw new Error("กรุณาเลือกเครื่องพิมพ์ Slip");
+    if (!isUuid(machineId)) throw new Error("machine_id ต้องเป็น UUID");
+
+    let token = await getAccessToken();
+    let checkResponse = await requestA4MachineSetting(token);
+    if (checkResponse.status === 401) {
+      token = await refreshAccessToken();
+      checkResponse = await requestA4MachineSetting(token);
+    }
+
+    let exists = a4SettingExists;
+    let currentSetting = a4MachineSetting;
+    if (checkResponse.status === 404) {
+      exists = false;
+      currentSetting = null;
+    } else if (checkResponse.ok) {
+      const existingSetting = await readA4MachineSettingResponse(checkResponse);
+      exists = Boolean(existingSetting);
+      currentSetting = existingSetting;
+    } else {
+      throw new Error(await getApiErrorMessage(checkResponse, `ตรวจสอบค่า Printer Slip ไม่สำเร็จ (${checkResponse.status})`));
+    }
+
+    const endpoint = exists
+      ? `${apiBaseUrl}/pos-machine-settings/machine/${encodeURIComponent(machineId)}`
+      : `${apiBaseUrl}/pos-machine-settings/`;
+    const method = exists ? "PUT" : "POST";
+    const payload = buildPosMachineSettingPayload({
+      setting: currentSetting,
+      selectedA4Printer: currentSetting?.a4_printer_name || currentSetting?.a4PrinterName || currentA4Printer,
+      selectedSlipPrinter: slipPrinter,
+      selectedSlipPaperSize: slipPaperSize,
+    });
+    const requestPayload = exists ? payload : { machine_id: machineId, ...payload };
+
+    let response = await fetch(endpoint, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestPayload),
+    });
+
+    if (response.status === 401) {
+      token = await refreshAccessToken();
+      response = await fetch(endpoint, {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestPayload),
+      });
+    }
+
+    if (!response.ok) {
+      throw new Error(await getApiErrorMessage(response, `บันทึกค่า Printer Slip ไม่สำเร็จ (${response.status})`));
+    }
+
+    setA4SettingExists(true);
+    setA4MachineSetting({
+      ...(currentSetting || {}),
+      machineId,
+      machine_id: machineId,
+      ...payload,
+    });
+    const storedDevice = await window.electronStore.get(POS_DEVICE_KEY);
+    const updatedStoredDevice = updateStoredSlipPrinter(storedDevice, machineId, slipPrinter, slipPaperSize);
+    await window.electronStore.set(POS_DEVICE_KEY, updatedStoredDevice);
+    setDevice(getStoredDevice(updatedStoredDevice) || updatedStoredDevice);
+    setCurrentSlipPrinter(slipPrinter);
+    setCurrentSlipPaperSize(slipPaperSize);
+  };
+
   const saveBarcodeSetting = async () => {
     if (!barcodePrinter) throw new Error("กรุณาเลือกเครื่องพิมพ์บาร์โค้ด");
 
@@ -422,7 +904,7 @@ export default function PrinterSetting() {
       show_price: barcodeShowPrice,
     };
 
-    let token = await getBarcodeAccessToken();
+    let token = await getAccessToken();
     let checkResponse = await requestBarcodeSetting(token);
     if (checkResponse.status === 401) {
       token = await refreshAccessToken();
@@ -490,8 +972,10 @@ export default function PrinterSetting() {
     try {
       if (target === "barcode") {
         await saveBarcodeSetting();
+      } else if (target === "a4") {
+        await saveA4MachineSetting();
       } else {
-        await savePosDevicePrinters(target);
+        await saveSlipMachineSetting();
       }
 
       setMessage("บันทึกค่าเครื่องพิมพ์เรียบร้อยแล้ว");
@@ -560,10 +1044,6 @@ export default function PrinterSetting() {
     </div>
   );
 
-  const currentA4Printer = getA4PrinterName(device);
-  const currentSlipPrinter = getSlipPrinterName(device);
-  const currentSlipPaperSize = getSlipPaperSize(device);
-
   return (
     <div className="flex h-full flex-col bg-slate-50 px-6 pb-12 pt-6">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
@@ -624,10 +1104,12 @@ export default function PrinterSetting() {
               </div>
               <div className="min-w-0">
                 <h2 className="font-semibold text-slate-800">Printer A4</h2>
-                <p className="text-sm text-slate-500">บันทึกลง /pos-devices</p>
-                <p className="mt-1 truncate text-xs font-semibold text-[#1d6fd8]">
-                  ปัจจุบัน: {currentA4Printer || "-"}
-                </p>
+                <p className="text-sm text-slate-500">เลือกเครื่องพิมพ์กระดาษ A4 สำหรับการพิมพ์รายงาน</p>
+                {currentA4Printer ? (
+                  <p className="mt-1 truncate text-xs font-semibold text-[#1d6fd8]">
+                    ปัจจุบัน: {currentA4Printer}
+                  </p>
+                ) : null}
               </div>
             </div>
 
