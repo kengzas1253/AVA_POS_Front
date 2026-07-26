@@ -15,6 +15,7 @@ import {
   IconPencil,
   IconPhone,
   IconPlus,
+  IconPower,
   IconQrcode,
   IconRefresh,
   IconSearch,
@@ -49,6 +50,7 @@ import FavoriteGroups, {
 import {
   AllProducts,
   type FavoriteProduct,
+  type FavoriteProductUnit,
 } from "./FavoriteItems";
 import { UserInfoPage } from "./UserInfoPage";
 import { ensureValidAccessToken, refreshAccessToken } from "./auth";
@@ -57,6 +59,7 @@ import { normalizeBarcode } from "./BarcodeNormalizer";
 interface CartItem {
   id?: number | string;
   product_id?: number | string | null;
+  productUnitId?: number | string | null;
   sku?: string | null;
   barcode?: string | null;
   name: string;
@@ -66,6 +69,15 @@ interface CartItem {
   qty: number;
   unit?: string;
   unit_code?: string | null;
+  unitId?: number | string | null;
+  unitName?: string | null;
+  conversionToBase?: number;
+  stockBaseQty?: number;
+  stock_qty?: number;
+  totalBaseQty?: number;
+  regularAmount?: number;
+  calculatedAmount?: number;
+  savingAmount?: number;
   price_mode?: string;
   cost_price?: number | string | null;
   sale_price?: number | string | null;
@@ -77,15 +89,38 @@ interface CartItem {
   allow_discount?: boolean;
   image_url?: string | null;
   note?: string;
+  pricingBreakdown?: CalculateCartPricingBreakdown[];
   discount: number;
 }
 
 interface ScannedProduct {
-  id: number | string;
-  barcode?: string;
-  name: string;
-  product_type: "FIXED_PRICE" | "WEIGHT" | "OPEN_PRICE" | "SERVICE_PRICE";
+  id?: number | string;
+  productId?: number | string;
+  product_id?: number | string;
+  productUnitId?: number | string;
+  product_unit_id?: number | string;
+  productUnit?: { id?: number | string; productUnitId?: number | string };
+  product_unit?: { id?: number | string; product_unit_id?: number | string };
+  sku?: string | null;
+  barcode: string;
+  name?: string;
+  productName?: string;
+  product_name?: string;
+  product_type?: "FIXED_PRICE" | "WEIGHT" | "OPEN_PRICE" | "SERVICE_PRICE";
+  unitId?: number | string;
+  unit_id?: number | string;
+  unitCode?: string;
+  unit_code?: string;
+  unitNameTh?: string;
+  unit_name_th?: string;
+  conversionToBase?: number;
+  conversion_to_base?: number;
   sale_price?: number;
+  salePrice?: number;
+  costPrice?: number;
+  cost_price?: number;
+  stockBaseQty?: number;
+  stock_base_qty?: number;
   stock_qty?: number;
   unit?: string;
   price_per_unit?: number;
@@ -127,6 +162,21 @@ interface ScanProductResponse {
   message?: string;
   product?: ScannedProduct;
 }
+
+type RawScanProductResponse =
+  | ScanProductResponse
+  | (ScannedProduct & { success?: boolean; code?: string; message?: string });
+
+const isScannedProductPayload = (
+  payload: RawScanProductResponse,
+): payload is ScannedProduct & {
+  success?: boolean;
+  code?: string;
+  message?: string;
+} =>
+  "productId" in payload ||
+  "productUnitId" in payload ||
+  "id" in payload;
 
 interface StoreSettings {
   store_name?: string;
@@ -272,12 +322,92 @@ interface CalculatePromotionsResponse {
   message?: string;
 }
 
+interface CalculateCartPricingBreakdown {
+  productUnitId?: number | string | null;
+  product_unit_id?: number | string | null;
+  unitCode?: string | null;
+  unit_code?: string | null;
+  unitNameTh?: string | null;
+  unit_name_th?: string | null;
+  unitName?: string | null;
+  unit_name?: string | null;
+  qty?: number | string | null;
+  conversionToBase?: number | string | null;
+  conversion_to_base?: number | string | null;
+  unitPrice?: number | string | null;
+  unit_price?: number | string | null;
+  totalAmount?: number | string | null;
+  total_amount?: number | string | null;
+}
+
+interface CalculateCartItem {
+  productId?: number | string | null;
+  product_id?: number | string | null;
+  productUnitId?: number | string | null;
+  product_unit_id?: number | string | null;
+  barcode?: string | null;
+  productName?: string | null;
+  product_name?: string | null;
+  name?: string | null;
+  unitCode?: string | null;
+  unit_code?: string | null;
+  unitName?: string | null;
+  unit_name?: string | null;
+  qty?: number | string | null;
+  unitPrice?: number | string | null;
+  unit_price?: number | string | null;
+  salePrice?: number | string | null;
+  sale_price?: number | string | null;
+  subtotal?: number | string | null;
+  totalAmount?: number | string | null;
+  total_amount?: number | string | null;
+  finalPrice?: number | string | null;
+  final_price?: number | string | null;
+  discountAmount?: number | string | null;
+  discount_amount?: number | string | null;
+  totalBaseQty?: number | string | null;
+  total_base_qty?: number | string | null;
+  regularAmount?: number | string | null;
+  regular_amount?: number | string | null;
+  calculatedAmount?: number | string | null;
+  calculated_amount?: number | string | null;
+  savingAmount?: number | string | null;
+  saving_amount?: number | string | null;
+  pricingBreakdown?: CalculateCartPricingBreakdown[];
+  pricing_breakdown?: CalculateCartPricingBreakdown[];
+}
+
+interface CalculateCartResponse {
+  items?: CalculateCartItem[];
+  subtotal?: number | string | null;
+  grandTotal?: number | string | null;
+  grand_total?: number | string | null;
+  discountTotal?: number | string | null;
+  discount_total?: number | string | null;
+  pricingBreakdown?: unknown;
+  pricing_breakdown?: unknown;
+  data?: {
+    items?: CalculateCartItem[];
+    subtotal?: number | string | null;
+    grandTotal?: number | string | null;
+    grand_total?: number | string | null;
+    discountTotal?: number | string | null;
+    discount_total?: number | string | null;
+    pricingBreakdown?: unknown;
+    pricing_breakdown?: unknown;
+  };
+  message?: string;
+}
+
 const formatBaht = (value: number): string => `฿${value.toFixed(2)}`;
 
 // กำหนดเวลาในการรอรับบาร์โค้ดจากเครื่องสแกน (หน่วย: มิลลิวินาที)
 //const BARCODE_INPUT_TIMEOUT_MS = 5000;
 const BARCODE_INPUT_TIMEOUT_MS = 300;
 const SELECTED_POS_CUSTOMER_KEY = "pos_selected_customer";
+const BARCODE_NOT_FOUND_MESSAGE = "ไม่พบบาร์โค้ดสินค้า";
+const BARCODE_SCAN_FAILED_MESSAGE =
+  "ไม่สามารถตรวจสอบบาร์โค้ดได้ กรุณาลองใหม่อีกครั้ง";
 
 const isEditableKeyboardTarget = (target: EventTarget | null): boolean => {
   if (!(target instanceof HTMLElement)) {
@@ -329,6 +459,21 @@ const getStoredAllowBelowCost = (storedDevice: unknown): boolean => {
   return value === true || value === "true";
 };
 
+const getStoredAutoConvertUnitPrice = (storedDevice: unknown): boolean => {
+  if (!storedDevice || typeof storedDevice !== "object") {
+    return false;
+  }
+
+  const device = storedDevice as {
+    autoConvertUnitPrice?: unknown;
+    pos_device?: { autoConvertUnitPrice?: unknown };
+  };
+  const value =
+    device.autoConvertUnitPrice ?? device.pos_device?.autoConvertUnitPrice;
+
+  return value === true || value === "true";
+};
+
 const getDiscountErrorMessage = (message?: string): string => {
   if (message === "This discount exceeds the allowed limit.") {
     return "ส่วนลดนี้เกินวงเงินที่อนุญาต";
@@ -348,7 +493,116 @@ const getDiscountErrorMessage = (message?: string): string => {
   return message || "ไม่สามารถตรวจสอบส่วนลดได้ กรุณาลองใหม่อีกครั้ง";
 };
 
+const normalizeScanProductResponse = (
+  payload: RawScanProductResponse,
+): ScanProductResponse => {
+  if ("product" in payload) {
+    return payload;
+  }
+
+  if (isScannedProductPayload(payload)) {
+    return {
+      success: payload.success ?? true,
+      code: payload.code,
+      message: payload.message,
+      product: payload,
+    };
+  }
+
+  return {
+    success: payload.success ?? false,
+    code: payload.code,
+    message: payload.message,
+  };
+};
+
+const getScannedProductId = (product: ScannedProduct): number | string =>
+  product.productId ?? product.product_id ?? product.id ?? "";
+
+const getScannedProductUnitId = (
+  product: ScannedProduct,
+): number | string | null =>
+  product.productUnitId ??
+  product.product_unit_id ??
+  product.productUnit?.productUnitId ??
+  product.productUnit?.id ??
+  product.product_unit?.product_unit_id ??
+  product.product_unit?.id ??
+  null;
+
+const getScannedProductName = (product: ScannedProduct): string =>
+  product.productName ?? product.product_name ?? product.name ?? "-";
+
+const getScannedProductPrice = (product: ScannedProduct): number =>
+  Number(product.salePrice ?? product.sale_price ?? product.price_per_unit ?? 0) || 0;
+
+const getScannedProductUnitCode = (product: ScannedProduct): string | undefined =>
+  product.unitCode ?? product.unit_code ?? product.unit;
+
+const mapScannedProductToCartItem = (
+  product: ScannedProduct,
+  price = getScannedProductPrice(product),
+  qty = 1,
+): CartItem => {
+  const productId = getScannedProductId(product);
+  const productUnitId = getScannedProductUnitId(product);
+  const productName = getScannedProductName(product);
+  const unitCode = getScannedProductUnitCode(product);
+  const unitPrice = Number(price) || 0;
+
+  return {
+    id: productUnitId ?? productId,
+    product_id: productId || null,
+    productUnitId,
+    sku: product.sku ?? null,
+    barcode: String(product.barcode ?? "").trim() || null,
+    name: productName,
+    product_name: productName,
+    price: unitPrice,
+    qty,
+    unit: unitCode,
+    unit_code: unitCode ?? null,
+    unitId: product.unitId ?? product.unit_id ?? null,
+    unitName: product.unitNameTh ?? product.unit_name_th ?? null,
+    conversionToBase: Number(product.conversionToBase ?? product.conversion_to_base ?? 1),
+    unit_price: unitPrice,
+    sale_price: product.salePrice ?? product.sale_price ?? unitPrice,
+    cost_price:
+      product.costPrice !== undefined
+        ? Number(product.costPrice)
+        : product.cost_price !== undefined
+          ? Number(product.cost_price)
+          : undefined,
+    stock_qty: product.stock_qty,
+    stockBaseQty: Number(product.stockBaseQty ?? product.stock_base_qty ?? product.stock_qty ?? 0),
+    allow_discount: product.allow_discount ?? true,
+    discount_amount: 0,
+    final_price: unitPrice * qty,
+    total_amount: unitPrice * qty,
+    discount: 0,
+  };
+};
+
+const isSameScannedCartItem = (
+  item: CartItem,
+  scannedProduct: ScannedProduct,
+): boolean => {
+  const scannedProductUnitId = getScannedProductUnitId(scannedProduct);
+
+  if (item.productUnitId != null && scannedProductUnitId != null) {
+    return String(item.productUnitId) === String(getScannedProductUnitId(scannedProduct));
+  }
+
+  return (
+    String(item.product_id ?? item.id) === String(getScannedProductId(scannedProduct)) &&
+    String(item.barcode ?? "") === String(scannedProduct.barcode ?? "")
+  );
+};
+
 const scanProduct = async (barcode: string): Promise<ScanProductResponse> => {
+  const normalizedBarcode = String(barcode ?? "").trim();
+  console.log("Scanned barcode:", normalizedBarcode);
+
   const [apiPath, storedDevice] = await Promise.all([
     window.electronStore.get("apiPath"),
     window.electronStore.get("pos_device"),
@@ -378,26 +632,37 @@ const scanProduct = async (barcode: string): Promise<ScanProductResponse> => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        barcode,
+        barcode: normalizedBarcode,
         machine_id: machineId,
       }),
     });
 
-  let response = await request(accessToken);
-  if (response.status === 401) {
-    accessToken = await refreshAccessToken();
-    response = await request(accessToken);
-  }
-
-  const data = (await response.json().catch(() => ({}))) as ScanProductResponse;
-  if (!response.ok) {
-    if (data.code === "PRODUCT_NOT_FOUND") {
-      return data;
+  try {
+    let response = await request(accessToken);
+    if (response.status === 401) {
+      accessToken = await refreshAccessToken();
+      response = await request(accessToken);
     }
-    throw new Error(data.message || `สแกนสินค้าไม่สำเร็จ (${response.status})`);
-  }
 
-  return data;
+    const data = (await response.json().catch(() => ({}))) as RawScanProductResponse;
+    console.log("Scan API response:", data);
+    if (!response.ok) {
+      if (response.status === 404 || data.code === "PRODUCT_NOT_FOUND") {
+        return {
+          success: false,
+          code: "PRODUCT_NOT_FOUND",
+          message: data.message,
+        };
+      }
+      console.error("Scan API error:", data);
+      throw new Error(data.message || `สแกนสินค้าไม่สำเร็จ (${response.status})`);
+    }
+
+    return normalizeScanProductResponse(data);
+  } catch (error) {
+    console.error("Scan API error:", error);
+    throw error;
+  }
 };
 
 const searchProducts = async (
@@ -773,6 +1038,446 @@ const calculateCartPromotions = async (
   return data;
 };
 
+const calculateCartUnitPrices = async (
+  machineId: string,
+  items: CartItem[],
+): Promise<CalculateCartResponse> => {
+  const requestItemsByUnit = new Map<
+    string,
+    { productId: number; productUnitId: number; qty: number }
+  >();
+
+  items.forEach((item) => {
+    const productId = Number(item.product_id ?? item.id);
+    const productUnitId = Number(item.productUnitId);
+
+    if (!Number.isFinite(productId) || productId <= 0) {
+      throw new Error(
+        `ไม่พบ productId ของสินค้า ${item.product_name ?? item.name}`,
+      );
+    }
+    if (!Number.isFinite(productUnitId) || productUnitId <= 0) {
+      throw new Error(
+        `ไม่พบ productUnitId ของสินค้า ${item.product_name ?? item.name}`,
+      );
+    }
+
+    const key = `${productId}:${productUnitId}`;
+    const existing = requestItemsByUnit.get(key);
+    requestItemsByUnit.set(key, {
+      productId,
+      productUnitId,
+      qty: (existing?.qty ?? 0) + (Number(item.qty) || 0),
+    });
+  });
+
+  const requestItems = Array.from(requestItemsByUnit.values()).map((item) => ({
+    productId: item.productId,
+    productUnitId: item.productUnitId,
+    qty: item.qty,
+  }));
+
+  console.log("Source cart before calculate:", items);
+  console.log("POST /pos/calculate-cart payload", {
+    machineId,
+    items: requestItems,
+  });
+
+  const response = await heldBillFetch("/pos/calculate-cart", {
+    method: "POST",
+    body: JSON.stringify({
+      machineId,
+      items: requestItems,
+    }),
+  });
+  const data = (await response.json().catch(() => ({}))) as CalculateCartResponse;
+
+  if (!response.ok) {
+    throw new Error(data.message || `Calculate cart failed (${response.status})`);
+  }
+
+  return data;
+};
+
+const getCalculateCartItems = (
+  result: CalculateCartResponse,
+): CalculateCartItem[] => result.data?.items ?? result.items ?? [];
+
+const getCalculateCartSubtotal = (
+  result: CalculateCartResponse,
+  fallback: number,
+): number =>
+  Number(result.data?.subtotal ?? result.subtotal ?? fallback) || fallback;
+
+const getCalculateCartGrandTotal = (
+  result: CalculateCartResponse,
+  fallback: number,
+): number =>
+  Number(
+    result.data?.grandTotal ??
+      result.data?.grand_total ??
+      result.grandTotal ??
+      result.grand_total ??
+      fallback,
+  ) || fallback;
+
+const getCalculateCartDiscountTotal = (
+  result: CalculateCartResponse,
+): number =>
+  Number(
+    result.data?.discountTotal ??
+      result.data?.discount_total ??
+      result.discountTotal ??
+      result.discount_total ??
+      0,
+  ) || 0;
+
+const getBreakdownProductUnitId = (
+  line: CalculateCartPricingBreakdown,
+): number | string | null => line.productUnitId ?? line.product_unit_id ?? null;
+
+const getBreakdownUnitCode = (
+  line: CalculateCartPricingBreakdown,
+): string | undefined => line.unitCode ?? line.unit_code ?? undefined;
+
+const getBreakdownUnitName = (
+  line: CalculateCartPricingBreakdown,
+): string | null =>
+  line.unitNameTh ??
+  line.unit_name_th ??
+  line.unitName ??
+  line.unit_name ??
+  null;
+
+const getBreakdownUnitPrice = (
+  line: CalculateCartPricingBreakdown,
+): number => Number(line.unitPrice ?? line.unit_price ?? 0) || 0;
+
+const getBreakdownQty = (line: CalculateCartPricingBreakdown): number =>
+  Number(line.qty ?? 0) || 0;
+
+const getBreakdownConversionToBase = (
+  line: CalculateCartPricingBreakdown,
+): number =>
+  Number(line.conversionToBase ?? line.conversion_to_base ?? 1) || 1;
+
+const getBreakdownTotalAmount = (
+  line: CalculateCartPricingBreakdown,
+): number =>
+  Number(
+    line.totalAmount ??
+      line.total_amount ??
+      getBreakdownQty(line) * getBreakdownUnitPrice(line),
+  ) || 0;
+
+const getFavoriteProductUnits = (
+  product: FavoriteProduct,
+): FavoriteProductUnit[] =>
+  product.productUnits ?? product.product_units ?? product.units ?? [];
+
+const getFavoriteUnitId = (
+  unit: FavoriteProductUnit,
+): number | string | null =>
+  unit.productUnitId ?? unit.product_unit_id ?? unit.id ?? null;
+
+const getFavoriteUnitUnitId = (
+  unit: FavoriteProductUnit,
+): number | string | undefined =>
+  unit.unitId ?? unit.unit_id ?? unit.unit?.id;
+
+const getFavoriteUnitCode = (
+  unit: FavoriteProductUnit,
+): string | undefined =>
+  unit.unitCode ?? unit.unit_code ?? unit.unit?.unitCode ?? unit.unit?.unit_code ?? undefined;
+
+const getFavoriteUnitName = (
+  unit: FavoriteProductUnit,
+): string | null =>
+  unit.unitNameTh ??
+  unit.unit_name_th ??
+  unit.unitName ??
+  unit.unit_name ??
+  unit.unit?.unitNameTh ??
+  unit.unit?.unit_name_th ??
+  unit.unit?.unitName ??
+  unit.unit?.unit_name ??
+  null;
+
+const getFavoriteUnitConversionToBase = (
+  unit: FavoriteProductUnit,
+): number => Number(unit.conversionToBase ?? unit.conversion_to_base ?? 1) || 1;
+
+const getFavoriteUnitSalePrice = (
+  unit: FavoriteProductUnit,
+  fallback: number,
+): number => Number(unit.salePrice ?? unit.sale_price ?? fallback) || fallback;
+
+const getDefaultProductUnit = (
+  product: FavoriteProduct,
+): FavoriteProductUnit | null => {
+  const units = getFavoriteProductUnits(product);
+
+  return (
+    units.find((unit) => unit.isBase === true || unit.is_base === true) ??
+    units.find((unit) => getFavoriteUnitConversionToBase(unit) === 1) ??
+    units[0] ??
+    null
+  );
+};
+
+const fetchFavoriteProductUnits = async (
+  productId: number | string,
+): Promise<FavoriteProductUnit[]> => {
+  const response = await heldBillFetch(`/products/${productId}/units`);
+  const payload = (await response.json().catch(() => ({}))) as
+    | FavoriteProductUnit[]
+    | { data?: FavoriteProductUnit[]; units?: FavoriteProductUnit[] };
+
+  if (!response.ok) {
+    return [];
+  }
+
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  return payload.data ?? payload.units ?? [];
+};
+
+const mapFavoriteProductUnitToScannedProduct = (
+  product: FavoriteProduct,
+  unit: FavoriteProductUnit,
+): ScannedProduct | null => {
+  const productUnitId = getFavoriteUnitId(unit);
+
+  if (productUnitId == null) {
+    return null;
+  }
+
+  return {
+    id: product.id,
+    productId: product.id,
+    productUnitId,
+    sku: product.sku,
+    barcode: String(unit.barcode ?? product.barcode ?? "").trim(),
+    name: product.product_name,
+    productName: product.product_name,
+    product_type:
+      product.price_mode === "WEIGHT_PRICE"
+        ? "WEIGHT"
+        : product.price_mode ?? "FIXED_PRICE",
+    unitId: getFavoriteUnitUnitId(unit),
+    unitCode: getFavoriteUnitCode(unit),
+    unitNameTh: getFavoriteUnitName(unit) ?? undefined,
+    conversionToBase: getFavoriteUnitConversionToBase(unit),
+    salePrice: getFavoriteUnitSalePrice(unit, Number(product.sale_price) || 0),
+    sale_price: getFavoriteUnitSalePrice(unit, Number(product.sale_price) || 0),
+    stock_qty: product.stock_qty,
+    unit: getFavoriteUnitCode(unit) ?? product.unit_code,
+    price_per_unit: getFavoriteUnitSalePrice(unit, Number(product.sale_price) || 0),
+    allow_discount: product.allow_discount,
+  };
+};
+
+const mapCalculateCartResponseToCart = (
+  result: CalculateCartResponse,
+): CartItem[] =>
+  getCalculateCartItems(result)
+    .map((item, index): CartItem | null => {
+      const pricingBreakdown =
+        item.pricingBreakdown ?? item.pricing_breakdown ?? [];
+      const firstLine = pricingBreakdown[0];
+      const productId = item.productId ?? item.product_id ?? null;
+      const productName =
+        item.productName ?? item.product_name ?? item.name ?? "-";
+      const totalBaseQty =
+        Number(item.totalBaseQty ?? item.total_base_qty) ||
+        pricingBreakdown.reduce(
+          (sum, line) =>
+            sum + getBreakdownQty(line) * getBreakdownConversionToBase(line),
+          0,
+        );
+      const calculatedAmount =
+        Number(item.calculatedAmount ?? item.calculated_amount) ||
+        pricingBreakdown.reduce(
+          (sum, line) => sum + getBreakdownTotalAmount(line),
+          0,
+        );
+      const regularAmount =
+        Number(item.regularAmount ?? item.regular_amount) || calculatedAmount;
+      const baseLine =
+        pricingBreakdown.find(
+          (line) => getBreakdownConversionToBase(line) === 1,
+        ) ?? firstLine;
+      const productUnitId =
+        getBreakdownProductUnitId(baseLine ?? {}) ??
+        item.productUnitId ??
+        item.product_unit_id ??
+        null;
+
+      if (productId == null || !firstLine) {
+        return null;
+      }
+
+      return {
+        id: productId ?? index,
+        product_id: productId,
+        productUnitId,
+        barcode: item.barcode ?? null,
+        name: productName,
+        product_name: productName,
+        price: getBreakdownUnitPrice(firstLine),
+        qty: totalBaseQty,
+        unit: getBreakdownUnitCode(firstLine),
+        unit_code: getBreakdownUnitCode(firstLine) ?? null,
+        unitName: getBreakdownUnitName(firstLine),
+        conversionToBase: getBreakdownConversionToBase(firstLine),
+        unit_price: getBreakdownUnitPrice(firstLine),
+        sale_price: getBreakdownUnitPrice(firstLine),
+        discount_amount: Math.max(regularAmount - calculatedAmount, 0),
+        final_price: calculatedAmount,
+        total_amount: calculatedAmount,
+        totalBaseQty,
+        regularAmount,
+        calculatedAmount,
+        savingAmount: Number(item.savingAmount ?? item.saving_amount ?? 0) || 0,
+        pricingBreakdown,
+        allow_discount: false,
+        discount: 0,
+      };
+    })
+    .filter((item): item is CartItem => item !== null);
+
+const mapCalculatedCartItems = (
+  currentItems: CartItem[],
+  calculatedItems: CalculateCartItem[],
+): CartItem[] => {
+  const mappedItems = calculatedItems.flatMap((calculated, index) => {
+    const productId = calculated.productId ?? calculated.product_id;
+    const breakdown =
+      calculated.pricingBreakdown ?? calculated.pricing_breakdown ?? [];
+    const source =
+      currentItems.find(
+        (item) =>
+          productId != null &&
+          String(item.product_id ?? item.id) === String(productId),
+      ) ??
+      currentItems[index] ??
+      currentItems[0];
+    const productName =
+      calculated.productName ??
+      calculated.product_name ??
+      calculated.name ??
+      source?.product_name ??
+      source?.name ??
+      "-";
+
+    if (breakdown.length > 0) {
+      return breakdown.map((line, lineIndex) => {
+        const productUnitId =
+          line.productUnitId ?? line.product_unit_id ?? null;
+        const qty = Number(line.qty ?? 0) || 0;
+        const unitPrice =
+          Number(line.unitPrice ?? line.unit_price ?? source?.unit_price ?? source?.price ?? 0) ||
+          0;
+        const totalAmount =
+          Number(line.totalAmount ?? line.total_amount ?? qty * unitPrice) || 0;
+
+        return {
+          ...(source ?? mapScannedProductToCartItem({
+            id: productId ?? productUnitId ?? `${index}-${lineIndex}`,
+            productUnitId: productUnitId ?? undefined,
+            barcode: calculated.barcode ?? "",
+            name: productName,
+          })),
+          id: productUnitId ?? productId ?? source?.id ?? `${index}-${lineIndex}`,
+          product_id: productId ?? source?.product_id ?? source?.id ?? null,
+          productUnitId,
+          barcode: calculated.barcode ?? source?.barcode ?? null,
+          name: productName,
+          product_name: productName,
+          price: unitPrice,
+          qty,
+          unit: line.unitCode ?? line.unit_code ?? source?.unit,
+          unit_code: line.unitCode ?? line.unit_code ?? source?.unit_code ?? null,
+          unitName:
+            line.unitNameTh ??
+            line.unit_name_th ??
+            line.unitName ??
+            line.unit_name ??
+            source?.unitName ??
+            null,
+          conversionToBase:
+            Number(line.conversionToBase ?? line.conversion_to_base ?? source?.conversionToBase ?? 1) ||
+            1,
+          unit_price: unitPrice,
+          sale_price: unitPrice,
+          discount_amount: 0,
+          final_price: totalAmount,
+          total_amount: totalAmount,
+          pricingBreakdown: [line],
+          discount: Number(source?.discount ?? 0) || 0,
+        };
+      });
+    }
+
+    const productUnitId =
+      calculated.productUnitId ?? calculated.product_unit_id ?? null;
+    const qty = Number(calculated.qty ?? source?.qty ?? 0) || 0;
+    const unitPrice =
+      Number(
+        calculated.unitPrice ??
+          calculated.unit_price ??
+          calculated.salePrice ??
+          calculated.sale_price ??
+          source?.unit_price ??
+          source?.price ??
+          0,
+      ) || 0;
+    const finalPrice =
+      Number(
+        calculated.finalPrice ??
+          calculated.final_price ??
+          calculated.totalAmount ??
+          calculated.total_amount ??
+          calculated.subtotal ??
+          qty * unitPrice,
+      ) || 0;
+
+    return {
+      ...(source ?? mapScannedProductToCartItem({
+        id: productId ?? productUnitId ?? index,
+        productUnitId: productUnitId ?? undefined,
+        barcode: calculated.barcode ?? "",
+        name: productName,
+      })),
+      id: productUnitId ?? productId ?? source?.id ?? index,
+      product_id: productId ?? source?.product_id ?? source?.id ?? null,
+      productUnitId,
+      barcode: calculated.barcode ?? source?.barcode ?? null,
+      name: productName,
+      product_name: productName,
+      price: unitPrice,
+      qty,
+      unit: calculated.unitCode ?? calculated.unit_code ?? source?.unit,
+      unit_code: calculated.unitCode ?? calculated.unit_code ?? source?.unit_code ?? null,
+      unitName: calculated.unitName ?? calculated.unit_name ?? source?.unitName ?? null,
+      unit_price: unitPrice,
+      sale_price: calculated.salePrice ?? calculated.sale_price ?? source?.sale_price ?? unitPrice,
+      discount_amount:
+        calculated.discountAmount ?? calculated.discount_amount ?? source?.discount_amount ?? 0,
+      final_price: finalPrice,
+      total_amount:
+        calculated.totalAmount ?? calculated.total_amount ?? finalPrice,
+      pricingBreakdown:
+        calculated.pricingBreakdown ?? calculated.pricing_breakdown,
+      discount: Number(source?.discount ?? 0) || 0,
+    };
+  });
+
+  return mappedItems;
+};
+
 const unwrapHeldBills = (payload: HeldBillsResponse | HeldBill[]): HeldBill[] => {
   if (Array.isArray(payload)) {
     return payload;
@@ -926,12 +1631,14 @@ export default function PosLandingPages() {
     group: FavoriteGroup;
   } | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [sourceCart, setSourceCart] = useState<CartItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchedProduct[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchMessage, setSearchMessage] = useState<string | null>(null);
   const [barcodeBuffer, setBarcodeBuffer] = useState("");
   const [isScanning, setIsScanning] = useState(false);
+  const [isBarcodeScannerEnabled, setIsBarcodeScannerEnabled] = useState(true);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const [pendingScanInput, setPendingScanInput] =
     useState<PendingScanInput | null>(null);
@@ -986,12 +1693,15 @@ export default function PosLandingPages() {
   );
   const [promotionLoading, setPromotionLoading] = useState(false);
   const [promotionError, setPromotionError] = useState<string | null>(null);
+  const [autoConvertUnitPrice, setAutoConvertUnitPrice] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const barcodeInputRef = useRef<HTMLInputElement>(null);
   const customerSearchRef = useRef<HTMLInputElement>(null);
   const holdBillNameRef = useRef<HTMLInputElement>(null);
   const scanInputRef = useRef<HTMLInputElement>(null);
   const discountInputRef = useRef<HTMLInputElement>(null);
+  const cartRef = useRef<CartItem[]>([]);
+  const sourceCartRef = useRef<CartItem[]>([]);
   const barcodeBufferRef = useRef("");
   const barcodeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isScanningRef = useRef(false);
@@ -1013,6 +1723,15 @@ export default function PosLandingPages() {
     "priceQuotation",
     "promotion",
   ].includes(currentPage);
+
+  const clearBarcodeBuffer = () => {
+    barcodeBufferRef.current = "";
+    setBarcodeBuffer("");
+    if (barcodeTimerRef.current) {
+      clearTimeout(barcodeTimerRef.current);
+      barcodeTimerRef.current = null;
+    }
+  };
   const isSettingPage = [
     "settings",
     "tax",
@@ -1111,6 +1830,110 @@ export default function PosLandingPages() {
       window.setTimeout(focusInput, 200);
     }
   };
+
+  const commitCartChange = async (
+    nextSourceItems: CartItem[],
+    options: { selectedName?: string | null; focus?: boolean } = {},
+  ): Promise<boolean> => {
+    const storedDevice = await window.electronStore.get("pos_device");
+    const shouldAutoConvert = getStoredAutoConvertUnitPrice(storedDevice);
+    setAutoConvertUnitPrice(shouldAutoConvert);
+
+    if (!shouldAutoConvert) {
+      sourceCartRef.current = nextSourceItems;
+      cartRef.current = nextSourceItems;
+      setSourceCart(nextSourceItems);
+      setCart(nextSourceItems);
+      if (options.selectedName !== undefined) {
+        setSelectedCartItemName(options.selectedName);
+      }
+      if (options.focus !== false) {
+        focusBarcodeInput();
+      }
+      return true;
+    }
+
+    if (!nextSourceItems.length) {
+      sourceCartRef.current = [];
+      cartRef.current = [];
+      setSourceCart([]);
+      setCart([]);
+      setPromotionSubtotal(0);
+      setDiscountTotal(0);
+      setGrandTotal(0);
+      setAppliedPromotions([]);
+      setPromotionError(null);
+      if (options.selectedName !== undefined) {
+        setSelectedCartItemName(options.selectedName);
+      }
+      if (options.focus !== false) {
+        focusBarcodeInput();
+      }
+      return true;
+    }
+
+    const machineId = getStoredMachineId(storedDevice);
+    if (!machineId) {
+      setScanMessage("ไม่พบ machine_id กรุณาลงทะเบียนเครื่อง POS ก่อน");
+      return false;
+    }
+
+    setPromotionLoading(true);
+    setPromotionError(null);
+    try {
+      sourceCartRef.current = nextSourceItems;
+      setSourceCart(nextSourceItems);
+      console.log("Source cart before calculate:", nextSourceItems);
+      const result = await calculateCartUnitPrices(machineId, nextSourceItems);
+      console.log("calculate-cart response", result);
+      console.log("cart before update", cartRef.current);
+      const updatedItems = mapCalculateCartResponseToCart(result);
+      console.log("cart after update", updatedItems);
+      const fallbackSubtotal = updatedItems.reduce(
+        (sum, item) =>
+          sum + (Number(item.total_amount ?? item.final_price ?? item.price * item.qty) || 0),
+        0,
+      );
+
+      cartRef.current = updatedItems;
+      setCart(updatedItems);
+      setPromotionSubtotal(getCalculateCartSubtotal(result, fallbackSubtotal));
+      setDiscountTotal(getCalculateCartDiscountTotal(result));
+      setGrandTotal(getCalculateCartGrandTotal(result, fallbackSubtotal));
+      setAppliedPromotions([]);
+      if (options.selectedName !== undefined) {
+        const selectedExists =
+          options.selectedName &&
+          updatedItems.some((item) => item.name === options.selectedName);
+        setSelectedCartItemName(
+          selectedExists ? options.selectedName ?? null : updatedItems[0]?.name ?? null,
+        );
+      }
+      if (options.focus !== false) {
+        focusBarcodeInput();
+      }
+      return true;
+    } catch (error) {
+      console.error("Calculate cart error:", error);
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "ไม่สามารถคำนวณราคาหน่วยสินค้าได้";
+      setScanMessage(message);
+      setPromotionError(message);
+      return false;
+    } finally {
+      setPromotionLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    cartRef.current = cart;
+  }, [cart]);
+
+  useEffect(() => {
+    sourceCartRef.current = sourceCart;
+  }, [sourceCart]);
   const filteredCustomers = useMemo(() => {
     const keyword = customerSearchQuery.trim().toLowerCase();
 
@@ -1147,6 +1970,10 @@ export default function PosLandingPages() {
     const applyPromotions = async () => {
       if (!cart.length) {
         resetPromotionState();
+        return;
+      }
+
+      if (autoConvertUnitPrice) {
         return;
       }
 
@@ -1258,11 +2085,12 @@ export default function PosLandingPages() {
     return () => {
       isCancelled = true;
     };
-  }, [cartPromotionSignature, normalSubTotal]);
+  }, [autoConvertUnitPrice, cartPromotionSignature, normalSubTotal]);
 
   const changeQty = (name: string, delta: number) => {
-    const changedIndex = cart.findIndex((item) => item.name === name);
-    const nextItems = cart
+    const currentSourceCart = sourceCartRef.current;
+    const changedIndex = currentSourceCart.findIndex((item) => item.name === name);
+    const nextItems = currentSourceCart
       .map((item) =>
         item.name === name
           ? {
@@ -1277,60 +2105,62 @@ export default function PosLandingPages() {
       )
       .filter((item) => item.qty > 0);
 
-    setCart(nextItems);
-
+    let nextSelectedName = selectedCartItemName;
     if (!nextItems.some((item) => item.name === name)) {
-      setSelectedCartItemName((current) => {
-        if (
-          current !== name &&
-          current !== null &&
-          nextItems.some((item) => item.name === current)
-        ) {
-          return current;
-        }
-
-        if (nextItems.length === 0) {
-          return null;
-        }
-
+      if (
+        selectedCartItemName !== name &&
+        selectedCartItemName !== null &&
+        nextItems.some((item) => item.name === selectedCartItemName)
+      ) {
+        nextSelectedName = selectedCartItemName;
+      } else if (nextItems.length === 0) {
+        nextSelectedName = null;
+      } else {
         const nextIndex = Math.min(
           Math.max(changedIndex, 0),
           nextItems.length - 1,
         );
-        return nextItems[nextIndex].name;
-      });
+        nextSelectedName = nextItems[nextIndex].name;
+      }
     }
+
+    void commitCartChange(nextItems, { selectedName: nextSelectedName });
   };
 
   const removeItem = (name: string) => {
-    const removedIndex = cart.findIndex((item) => item.name === name);
-    const remainingItems = cart.filter((item) => item.name !== name);
+    const currentSourceCart = sourceCartRef.current;
+    const removedIndex = currentSourceCart.findIndex((item) => item.name === name);
+    const remainingItems = currentSourceCart.filter((item) => item.name !== name);
 
-    setCart(remainingItems);
-    setSelectedCartItemName((current) => {
-      if (
-        current !== name &&
-        current !== null &&
-        remainingItems.some((item) => item.name === current)
-      ) {
-        return current;
-      }
-
-      if (remainingItems.length === 0) {
-        return null;
-      }
-
+    let nextSelectedName = selectedCartItemName;
+    if (
+      selectedCartItemName !== name &&
+      selectedCartItemName !== null &&
+      remainingItems.some((item) => item.name === selectedCartItemName)
+    ) {
+      nextSelectedName = selectedCartItemName;
+    } else if (remainingItems.length === 0) {
+      nextSelectedName = null;
+    } else {
       const nextIndex = Math.min(
         Math.max(removedIndex, 0),
         remainingItems.length - 1,
       );
-      return remainingItems[nextIndex].name;
-    });
-    focusBarcodeInput();
+      nextSelectedName = remainingItems[nextIndex].name;
+    }
+
+    void commitCartChange(remainingItems, { selectedName: nextSelectedName });
   };
 
   const clearCart = () => {
+    sourceCartRef.current = [];
+    setSourceCart([]);
     setCart([]);
+    setPromotionSubtotal(0);
+    setDiscountTotal(0);
+    setGrandTotal(0);
+    setAppliedPromotions([]);
+    setPromotionError(null);
     setSelectedCartItemName(null);
     setActiveHeldBillId(null);
     setShowClearConfirm(false);
@@ -1557,7 +2387,7 @@ export default function PosLandingPages() {
   };
 
   const openPriceInput = (product: ScannedProduct) => {
-    const price = Number(product.sale_price ?? product.price_per_unit) || 0;
+    const price = getScannedProductPrice(product);
     setScanInputValue(price > 0 ? String(price) : "");
     setScanMessage(null);
     setPendingScanInput({ type: "PRICE", product });
@@ -1569,11 +2399,63 @@ export default function PosLandingPages() {
     setScanMessage(null);
   };
 
-  const addFavoriteProduct = (product: FavoriteProduct) => {
+  const addFavoriteProduct = async (product: FavoriteProduct) => {
+    console.log("Favorite product clicked:", product);
+    const priceMode = product.price_mode ?? "FIXED_PRICE";
+    let defaultUnit = getDefaultProductUnit(product);
+    console.log("Resolved default unit:", defaultUnit);
+    let cartProduct = defaultUnit
+      ? mapFavoriteProductUnitToScannedProduct(product, defaultUnit)
+      : null;
+
+    if (!cartProduct && product.barcode) {
+      try {
+        const scanResult = await scanProduct(product.barcode);
+        if (scanResult.success && scanResult.product) {
+          cartProduct = scanResult.product;
+        }
+      } catch (error) {
+        console.error("Resolve favorite product by barcode error:", error);
+      }
+    }
+
+    if (!cartProduct) {
+      const units = await fetchFavoriteProductUnits(product.id);
+      defaultUnit = getDefaultProductUnit({ ...product, productUnits: units });
+      console.log("Resolved default unit from product units API:", defaultUnit);
+      cartProduct = defaultUnit
+        ? mapFavoriteProductUnitToScannedProduct(product, defaultUnit)
+        : null;
+    }
+
+    if (!cartProduct || getScannedProductUnitId(cartProduct) == null) {
+      setScanMessage(`ไม่พบหน่วยขายของสินค้า ${product.product_name}`);
+      return;
+    }
+
+    if (priceMode === "OPEN_PRICE" || priceMode === "SERVICE_PRICE") {
+      openPriceInput(cartProduct);
+      return;
+    }
+
+    if (priceMode === "WEIGHT_PRICE") {
+      setScanInputValue("");
+      setScanMessage(null);
+      setPendingScanInput({ type: "WEIGHT", product: cartProduct });
+      return;
+    }
+
+    void addScannedProductToCart(
+      cartProduct,
+      getScannedProductPrice(cartProduct),
+    );
+  };
+
+  const addFavoriteProductLegacy = (product: FavoriteProduct) => {
     const priceMode = product.price_mode ?? "FIXED_PRICE";
     const cartProduct: ScannedProduct = {
       id: product.id,
-      barcode: product.barcode,
+      barcode: product.barcode ?? "",
       name: product.product_name,
       product_type:
         priceMode === "WEIGHT_PRICE" ? "WEIGHT" : priceMode,
@@ -1598,60 +2480,36 @@ export default function PosLandingPages() {
       return;
     }
 
-    addScannedProductToCart(cartProduct, Number(product.sale_price) || 0);
+    void addScannedProductToCart(cartProduct, Number(product.sale_price) || 0);
   };
 
-  const addScannedProductToCart = (
+  const addScannedProductToCart = async (
     product: ScannedProduct,
     price: number,
     qty = 1,
-  ) => {
-    setSelectedCartItemName(product.name);
-    setCart((items) => {
-      const found = items.find(
-        (item) =>
-          String(item.id) === String(product.id) &&
-          item.price === price &&
-          item.unit === product.unit,
-      );
-
-      if (found) {
-        return items.map((item) =>
+  ): Promise<boolean> => {
+    const productName = getScannedProductName(product);
+    const productUnitId = getScannedProductUnitId(product);
+    const currentCart = sourceCartRef.current;
+    const found = currentCart.find((item) => isSameScannedCartItem(item, product));
+    const nextItems = found
+      ? currentCart.map((item) =>
           item === found
             ? {
                 ...item,
-                product_id: item.product_id ?? product.id,
+                product_id: item.product_id ?? getScannedProductId(product),
+                productUnitId: item.productUnitId ?? productUnitId,
                 barcode: item.barcode ?? product.barcode ?? null,
                 qty: item.qty + qty,
+                totalBaseQty: Number(item.totalBaseQty ?? item.qty) + qty,
                 final_price: (item.qty + qty) * item.price,
                 total_amount: (item.qty + qty) * item.price,
               }
             : item,
-        );
-      }
+        )
+      : [...currentCart, mapScannedProductToCartItem(product, price, qty)];
 
-      return [
-        ...items,
-        {
-          id: product.id,
-          product_id: product.id,
-          barcode: product.barcode ?? null,
-          name: product.name,
-          product_name: product.name,
-          price,
-          qty,
-          unit: product.unit,
-          unit_price: price,
-          sale_price: product.sale_price ?? price,
-          allow_discount: product.allow_discount ?? true,
-          discount_amount: 0,
-          final_price: price * qty,
-          total_amount: price * qty,
-          discount: 0,
-        },
-      ];
-    });
-    focusBarcodeInput();
+    return commitCartChange(nextItems, { selectedName: productName });
   };
 
   const changeItemDiscount = (name: string, discount: number) => {
@@ -1866,7 +2724,7 @@ export default function PosLandingPages() {
   const selectSearchedProduct = (product: SearchedProduct) => {
     const cartProduct: ScannedProduct = {
       id: product.product_id,
-      barcode: product.barcode ?? undefined,
+      barcode: product.barcode ?? "",
       name: product.name,
       product_type:
         product.price_mode === "WEIGHT_PRICE"
@@ -1893,7 +2751,7 @@ export default function PosLandingPages() {
       return;
     }
 
-    addScannedProductToCart(cartProduct, Number(product.price) || 0);
+    void addScannedProductToCart(cartProduct, Number(product.price) || 0);
     setSearchQuery("");
     focusBarcodeInput();
   };
@@ -1937,9 +2795,9 @@ export default function PosLandingPages() {
             return;
           }
 
-          addScannedProductToCart(
+          await addScannedProductToCart(
             scanResult.product,
-            Number(scanResult.product.sale_price) || 0,
+            getScannedProductPrice(scanResult.product),
           );
           setSearchQuery("");
           return;
@@ -1989,6 +2847,14 @@ export default function PosLandingPages() {
     if (!normalizedBarcode) {
       return;
     }
+
+    if (!isBarcodeScannerEnabled) {
+      setScanMessage(BARCODE_NOT_FOUND_MESSAGE);
+      clearBarcodeBuffer();
+      pendingBarcodeScanQueueRef.current = [];
+      return;
+    }
+
     let shouldRefocusBarcode = true;
 
     if (isScanningRef.current) {
@@ -2004,12 +2870,12 @@ export default function PosLandingPages() {
       const result = await scanProduct(normalizedBarcode);
 
       if (result.code === "PRODUCT_NOT_FOUND") {
-        window.confirm("ไม่เจอบาร์โค้ดในระบบ");
+        setScanMessage(BARCODE_NOT_FOUND_MESSAGE);
         return;
       }
 
       if (!result.success || !result.product) {
-        window.confirm("ไม่เจอบาร์โค้ดในระบบ");
+        setScanMessage(BARCODE_NOT_FOUND_MESSAGE);
         return;
       }
 
@@ -2033,15 +2899,20 @@ export default function PosLandingPages() {
         return;
       }
 
-      addScannedProductToCart(
+      await addScannedProductToCart(
         result.product,
-        Number(result.product.sale_price) || 0,
+        getScannedProductPrice(result.product),
       );
     } catch (error) {
+      console.error("Scan API error:", error);
       setScanMessage(
-        error instanceof Error ? error.message : "ไม่สามารถสแกนสินค้าได้",
+        error instanceof Error && error.message
+          ? error.message
+          : BARCODE_SCAN_FAILED_MESSAGE,
       );
     } finally {
+      barcodeBufferRef.current = "";
+      setBarcodeBuffer("");
       isScanningRef.current = false;
       setIsScanning(false);
 
@@ -2117,7 +2988,7 @@ export default function PosLandingPages() {
     }, BARCODE_INPUT_TIMEOUT_MS);
   };
 
-  const confirmScanInput = () => {
+  const confirmScanInput = async () => {
     if (!pendingScanInput) {
       return;
     }
@@ -2133,14 +3004,17 @@ export default function PosLandingPages() {
       return;
     }
 
-    if (pendingScanInput.type === "WEIGHT") {
-      addScannedProductToCart(
+    const didUpdate =
+      pendingScanInput.type === "WEIGHT"
+        ? await addScannedProductToCart(
         pendingScanInput.product,
-        Number(pendingScanInput.product.price_per_unit) || 0,
+        getScannedProductPrice(pendingScanInput.product),
         value,
-      );
-    } else {
-      addScannedProductToCart(pendingScanInput.product, value);
+          )
+        : await addScannedProductToCart(pendingScanInput.product, value);
+
+    if (!didUpdate) {
+      return;
     }
 
     setPendingScanInput(null);
@@ -2286,13 +3160,17 @@ export default function PosLandingPages() {
 
     const fetchStoreSettings = async () => {
       try {
-        const settings = await loadStoreSettings();
+        const [settings, storedDevice] = await Promise.all([
+          loadStoreSettings(),
+          window.electronStore.get("pos_device"),
+        ]);
         if (!isCancelled) {
           setStoreSettings({
             store_name: settings.store_name?.trim() || "AVA MY POS",
             vat_enabled: Boolean(settings.vat_enabled),
             vat_rate: Number(settings.vat_rate) || 0,
           });
+          setAutoConvertUnitPrice(getStoredAutoConvertUnitPrice(storedDevice));
         }
       } catch (err) {
         console.error("Error loading store settings:", err);
@@ -2430,6 +3308,7 @@ export default function PosLandingPages() {
     };
   }, [
     currentPage,
+    isBarcodeScannerEnabled,
     pendingScanInput,
     showClearConfirm,
     showShortcuts,
@@ -2756,6 +3635,47 @@ export default function PosLandingPages() {
             ) : null}
             <button
               type="button"
+              onClick={() => {
+                setIsBarcodeScannerEnabled((enabled) => {
+                  const nextEnabled = !enabled;
+                  clearBarcodeBuffer();
+                  pendingBarcodeScanQueueRef.current = [];
+                  setScanMessage(null);
+                  if (nextEnabled) {
+                    focusBarcodeInput();
+                  }
+                  return nextEnabled;
+                });
+              }}
+              className={`relative flex h-9 w-9 items-center justify-center rounded-full border text-[0px] transition ${
+                isBarcodeScannerEnabled
+                  ? "border-emerald-200/80 bg-white text-emerald-600 shadow-sm shadow-emerald-950/20 hover:bg-emerald-50"
+                  : "border-white/25 bg-white/10 text-white/55 hover:bg-white/15 hover:text-white/80"
+              }`}
+              title={
+                isBarcodeScannerEnabled
+                  ? "เครื่องอ่านบาร์โค้ดออนไลน์"
+                  : "เครื่องอ่านบาร์โค้ดปิดอยู่"
+              }
+            >
+              <IconQrcode size={18} stroke={2.2} />
+              <span
+                className={`absolute -right-0.5 -top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full border-2 border-[#2f84e4] ${
+                  isBarcodeScannerEnabled ? "bg-emerald-400" : "bg-slate-300"
+                }`}
+              >
+                <IconPower
+                  size={8}
+                  stroke={3}
+                  className={
+                    isBarcodeScannerEnabled ? "text-emerald-950" : "text-slate-500"
+                  }
+                />
+              </span>
+              {isBarcodeScannerEnabled ? "ออนไลน์" : "ปิด"}
+            </button>
+            <button
+              type="button"
               onClick={() => setShowShortcuts(true)}
               className="flex h-8 w-8 items-center justify-center rounded-lg text-white/90 transition hover:bg-white/15"
               title="คีย์ลัด"
@@ -2765,11 +3685,14 @@ export default function PosLandingPages() {
             <button
               type="button"
               onClick={() => {
-                barcodeBufferRef.current = "";
-                setBarcodeBuffer("");
+                clearBarcodeBuffer();
                 focusBarcodeInput();
               }}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-white/90 transition hover:bg-white/15"
+              className={`flex h-8 w-8 items-center justify-center rounded-lg transition ${
+                isBarcodeScannerEnabled
+                  ? "text-emerald-100 hover:bg-white/15"
+                  : "text-white/60 hover:bg-white/15"
+              }`}
               title="พร้อมรับบาร์โค้ดจากเครื่องสแกน"
             >
               <IconQrcode size={18} />
@@ -3088,7 +4011,19 @@ export default function PosLandingPages() {
                 {cart.length ? (
                   <div className="space-y-3">
                     {cart.map((item) => {
-                      const lineTotal = item.price * item.qty;
+                      const pricingBreakdown = item.pricingBreakdown ?? [];
+                      const calculatedLineTotal =
+                        Number(
+                          item.calculatedAmount ??
+                            item.total_amount ??
+                            item.final_price,
+                        ) || 0;
+                      const lineTotal =
+                        calculatedLineTotal > 0
+                          ? calculatedLineTotal
+                          : item.price * item.qty;
+                      const unitLabel =
+                        item.unitName ?? item.unit_code ?? item.unit ?? "";
                       const lineDiscount = Math.min(
                         Math.max(
                           Number(item.discount_amount ?? item.discount ?? 0) || 0,
@@ -3096,10 +4031,7 @@ export default function PosLandingPages() {
                         ),
                         lineTotal,
                       );
-                      const lineFinalPrice =
-                        Number(item.final_price ?? item.total_amount ?? lineTotal) ||
-                        lineTotal;
-                      const lineNetTotal = Math.max(lineFinalPrice, 0);
+                      const lineNetTotal = Math.max(lineTotal - lineDiscount, 0);
 
                       return (
                       <div
@@ -3114,9 +4046,35 @@ export default function PosLandingPages() {
                         <div className="flex items-start justify-between gap-3">
                           <div>
                             <p className="font-semibold text-slate-900">{item.name}</p>
-                            <p className="text-xs text-slate-500">
-                              {formatBaht(item.price)} x {item.qty}
-                            </p>
+                            {pricingBreakdown.length > 0 ? (
+                              <div className="mt-1 space-y-0.5">
+                                {pricingBreakdown.map((line, lineIndex) => {
+                                  const breakdownUnitLabel =
+                                    getBreakdownUnitName(line) ??
+                                    getBreakdownUnitCode(line) ??
+                                    "หน่วย";
+                                  const breakdownQty = getBreakdownQty(line);
+                                  const breakdownTotal = getBreakdownTotalAmount(line);
+
+                                  return (
+                                    <p
+                                      key={`${getBreakdownProductUnitId(line) ?? lineIndex}-${lineIndex}`}
+                                      className="flex min-w-[190px] justify-between gap-3 text-xs text-slate-500"
+                                    >
+                                      <span>
+                                        {breakdownUnitLabel} x {breakdownQty}
+                                      </span>
+                                      <span>{formatBaht(breakdownTotal)}</span>
+                                    </p>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <p className="text-xs text-slate-500">
+                                {formatBaht(item.price)} x {item.qty}
+                                {unitLabel ? ` ${unitLabel}` : ""}
+                              </p>
+                            )}
                             {lineDiscount > 0 ? (
                               <p className="text-xs text-slate-400">
                                 ราคาก่อนลด {formatBaht(lineTotal)}
@@ -3664,7 +4622,7 @@ export default function PosLandingPages() {
               className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl"
               onSubmit={(event) => {
                 event.preventDefault();
-                confirmScanInput();
+                void confirmScanInput();
               }}
             >
               <div className="flex items-start justify-between gap-4">

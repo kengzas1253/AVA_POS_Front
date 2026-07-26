@@ -72,9 +72,78 @@ interface Unit {
   unit_code: string;
   unit_name_th: string;
   unit_name_en?: string;
+  unitCode?: string;
+  unitNameTh?: string;
+  unitNameEn?: string;
   symbol?: string;
   unit_group_id?: number | string;
 }
+
+interface ProductUnit {
+  id?: number | string;
+  productUnitId?: number | string;
+  product_unit_id?: number | string;
+  productId?: number | string;
+  product_id?: number | string;
+  unitId?: number | string;
+  unit_id?: number | string;
+  unitCode?: string;
+  unit_code?: string;
+  barcode: string;
+  conversionToBase?: number;
+  conversion_to_base?: number;
+  salePrice?: number;
+  sale_price?: number;
+  costPrice?: number;
+  cost_price?: number;
+  isBase?: boolean;
+  is_base?: boolean;
+  isActive?: boolean;
+  is_active?: boolean;
+  sortOrder?: number;
+  sort_order?: number;
+  unit?: Unit;
+}
+
+interface ProductUnitFormItem {
+  clientId: string;
+  productUnitId?: number | string;
+  unitId: number | string | "";
+  barcode: string;
+  conversionToBase: string;
+  salePrice: string;
+  costPrice: string;
+  isBase: boolean;
+  isActive: boolean;
+  sortOrder: number;
+  isNew: boolean;
+  isDirty: boolean;
+  isDeleted: boolean;
+}
+
+interface CreateProductUnitPayload {
+  unitId: number | string;
+  barcode: string;
+  conversionToBase: number;
+  salePrice: number;
+  costPrice: number;
+  isBase: boolean;
+  isActive: boolean;
+  sortOrder: number;
+}
+
+type UpdateProductUnitPayload = Partial<CreateProductUnitPayload>;
+
+type ProductUnitSnapshot = {
+  unitId: string;
+  barcode: string;
+  conversionToBase: string;
+  salePrice: string;
+  costPrice: string;
+  isBase: boolean;
+  isActive: boolean;
+  sortOrder: number;
+};
 
 interface UnitGroup {
   id: number | string;
@@ -144,6 +213,26 @@ const EMPTY_FORM = {
 };
 
 const PRODUCT_NOT_FOUND_ADDABLE_MESSAGE = "ไม่มีสินค้าในระบบ สามารถเพิ่มสินค้าได้";
+
+const createClientId = (): string =>
+  typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `unit-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+const createEmptyProductUnit = (sortOrder: number): ProductUnitFormItem => ({
+  clientId: createClientId(),
+  unitId: "",
+  barcode: "",
+  conversionToBase: sortOrder === 1 ? "1" : "",
+  salePrice: "",
+  costPrice: "",
+  isBase: sortOrder === 1,
+  isActive: true,
+  sortOrder,
+  isNew: true,
+  isDirty: false,
+  isDeleted: false,
+});
 
 const getDisplayCategoryName = (categoryName: string): string =>
   categoryName === "General" ? "สินค้าทั่วไป" : categoryName;
@@ -285,6 +374,22 @@ const getApiErrorMessage = async (
   }
 };
 
+const translateApiErrorMessage = (message: string): string => {
+  if (/Barcode already exists/i.test(message)) {
+    return "บาร์โค้ดนี้มีอยู่ในระบบแล้ว";
+  }
+  if (/This product unit has stock movement history/i.test(message)) {
+    return "หน่วยนี้มีประวัติการเคลื่อนไหวสต๊อกแล้ว กรุณาปิดการขายหน่วยนี้แทนการลบ";
+  }
+  if (/Product unit not found/i.test(message)) {
+    return "ไม่พบหน่วยสินค้านี้";
+  }
+  if (/Base unit conversion must be 1/i.test(message)) {
+    return "หน่วยฐานต้องมีจำนวนเทียบหน่วยฐานเท่ากับ 1";
+  }
+  return message;
+};
+
 const unwrapUnitGroupsResponse = (payload: unknown): UnitGroup[] => {
   if (Array.isArray(payload)) {
     return payload as UnitGroup[];
@@ -300,6 +405,62 @@ const unwrapUnitGroupsResponse = (payload: unknown): UnitGroup[] => {
   }
 
   return [];
+};
+
+const unwrapUnitsResponse = (payload: unknown): Unit[] => {
+  if (Array.isArray(payload)) {
+    return payload as Unit[];
+  }
+
+  if (payload && typeof payload === "object" && "data" in payload) {
+    const data = (payload as { data?: unknown }).data;
+    if (data && typeof data === "object" && "data" in data) {
+      const nestedData = (data as { data?: unknown }).data;
+      return Array.isArray(nestedData) ? (nestedData as Unit[]) : [];
+    }
+    return Array.isArray(data) ? (data as Unit[]) : [];
+  }
+
+  return [];
+};
+
+const unwrapProductUnitsResponse = (payload: unknown): ProductUnit[] => {
+  if (Array.isArray(payload)) {
+    return payload as ProductUnit[];
+  }
+
+  if (payload && typeof payload === "object" && "items" in payload) {
+    const items = (payload as { items?: unknown }).items;
+    return Array.isArray(items) ? (items as ProductUnit[]) : [];
+  }
+
+  if (payload && typeof payload === "object" && "data" in payload) {
+    const data = (payload as { data?: unknown }).data;
+    if (Array.isArray(data)) {
+      return data as ProductUnit[];
+    }
+    if (data && typeof data === "object" && "items" in data) {
+      const items = (data as { items?: unknown }).items;
+      return Array.isArray(items) ? (items as ProductUnit[]) : [];
+    }
+    if (data && typeof data === "object" && "data" in data) {
+      const nestedData = (data as { data?: unknown }).data;
+      return Array.isArray(nestedData) ? (nestedData as ProductUnit[]) : [];
+    }
+  }
+
+  return [];
+};
+
+const unwrapProductUnitResponse = (payload: unknown): ProductUnit => {
+  if (payload && typeof payload === "object" && "data" in payload) {
+    const data = (payload as { data?: unknown }).data;
+    if (data && typeof data === "object" && "data" in data) {
+      return ((data as { data?: ProductUnit }).data ?? {}) as ProductUnit;
+    }
+    return (data ?? {}) as ProductUnit;
+  }
+  return (payload ?? {}) as ProductUnit;
 };
 
 const unwrapProductResponse = (payload: unknown): Product | null => {
@@ -318,6 +479,25 @@ const unwrapProductResponse = (payload: unknown): Product | null => {
   return payload as Product;
 };
 
+const unwrapProductsListResponse = (payload: unknown): Product[] => {
+  if (Array.isArray(payload)) {
+    return payload as Product[];
+  }
+
+  if (payload && typeof payload === "object" && "data" in payload) {
+    const data = (payload as { data?: unknown }).data;
+    if (Array.isArray(data)) {
+      return data as Product[];
+    }
+    if (data && typeof data === "object" && "data" in data) {
+      const nestedData = (data as { data?: unknown }).data;
+      return Array.isArray(nestedData) ? (nestedData as Product[]) : [];
+    }
+  }
+
+  return [];
+};
+
 const fetchUnitGroupsWithUnits = async (): Promise<UnitGroup[]> => {
   const response = await authorizedFetch("/unit-groups/with-units");
 
@@ -330,6 +510,120 @@ const fetchUnitGroupsWithUnits = async (): Promise<UnitGroup[]> => {
   }
 
   return unwrapUnitGroupsResponse(await response.json().catch(() => []));
+};
+
+const getUnits = async (): Promise<Unit[]> => {
+  const response = await authorizedFetch("/units");
+
+  if (!response.ok) {
+    const message = await getApiErrorMessage(
+      response,
+      `โหลดข้อมูลหน่วยไม่สำเร็จ (${response.status})`,
+    );
+    throw new Error(translateApiErrorMessage(message));
+  }
+
+  return unwrapUnitsResponse(await response.json().catch(() => []));
+};
+
+const getProductUnits = async (
+  productId: string | number,
+): Promise<ProductUnit[]> => {
+  const response = await authorizedFetch(`/products/${productId}/units`);
+
+  if (!response.ok) {
+    const message = await getApiErrorMessage(
+      response,
+      `โหลดหน่วยสินค้าไม่สำเร็จ (${response.status})`,
+    );
+    throw new Error(translateApiErrorMessage(message));
+  }
+
+  return unwrapProductUnitsResponse(await response.json().catch(() => []));
+};
+
+const createProductUnit = async (
+  productId: string | number,
+  payload: CreateProductUnitPayload,
+): Promise<ProductUnit> => {
+  const response = await authorizedFetch(`/products/${productId}/units`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const message = await getApiErrorMessage(
+      response,
+      `เพิ่มหน่วยสินค้าไม่สำเร็จ (${response.status})`,
+    );
+    throw new Error(translateApiErrorMessage(message));
+  }
+
+  return unwrapProductUnitResponse(await response.json().catch(() => ({})));
+};
+
+const updateProductUnit = async (
+  productId: string | number,
+  productUnitId: string | number,
+  payload: UpdateProductUnitPayload,
+): Promise<ProductUnit> => {
+  const response = await authorizedFetch(
+    `/products/${productId}/units/${productUnitId}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+
+  if (!response.ok) {
+    const message = await getApiErrorMessage(
+      response,
+      `แก้ไขหน่วยสินค้าไม่สำเร็จ (${response.status})`,
+    );
+    throw new Error(translateApiErrorMessage(message));
+  }
+
+  return unwrapProductUnitResponse(await response.json().catch(() => ({})));
+};
+
+const deleteProductUnit = async (
+  productId: string | number,
+  productUnitId: string | number,
+): Promise<void> => {
+  const response = await authorizedFetch(
+    `/products/${productId}/units/${productUnitId}`,
+    { method: "DELETE" },
+  );
+
+  if (!response.ok) {
+    const message = await getApiErrorMessage(
+      response,
+      `ลบหน่วยสินค้าไม่สำเร็จ (${response.status})`,
+    );
+    throw new Error(translateApiErrorMessage(message));
+  }
+};
+
+const setBaseProductUnit = async (
+  productId: string | number,
+  productUnitId: string | number,
+): Promise<ProductUnit> => {
+  const response = await authorizedFetch(
+    `/products/${productId}/units/${productUnitId}/set-base`,
+    { method: "POST" },
+  );
+
+  if (!response.ok) {
+    const message = await getApiErrorMessage(
+      response,
+      `ตั้งหน่วยฐานไม่สำเร็จ (${response.status})`,
+    );
+    throw new Error(translateApiErrorMessage(message));
+  }
+
+  return unwrapProductUnitResponse(await response.json().catch(() => ({})));
 };
 
 const findUnitByCode = (
@@ -351,6 +645,132 @@ const findUnitByCode = (
   }
 
   return null;
+};
+
+const getUnitId = (unit: ProductUnit): number | string | "" =>
+  unit.unitId ?? unit.unit_id ?? unit.unit?.id ?? "";
+
+const getProductUnitId = (unit: ProductUnit): number | string | undefined =>
+  unit.productUnitId ?? unit.product_unit_id ?? unit.id;
+
+const getUnitCode = (unit?: Unit | ProductUnit | null): string =>
+  unit?.unitCode || unit?.unit_code || "";
+
+const getUnitName = (unit?: Unit | null): string =>
+  unit?.unitNameTh ||
+  unit?.unit_name_th ||
+  unit?.unitCode ||
+  unit?.unit_code ||
+  "";
+
+const mapProductUnitToFormItem = (
+  productUnit: ProductUnit,
+  index: number,
+  availableUnitList: Unit[] = [],
+): ProductUnitFormItem => ({
+  clientId: createClientId(),
+  productUnitId: getProductUnitId(productUnit),
+  unitId:
+    getUnitId(productUnit) ||
+    availableUnitList.find(
+      (unit) =>
+        getUnitCode(unit).trim() &&
+        getUnitCode(unit).trim() ===
+          (getUnitCode(productUnit) || getUnitCode(productUnit.unit)).trim(),
+    )?.id ||
+    "",
+  barcode: productUnit.barcode ?? "",
+  conversionToBase: String(
+    productUnit.conversionToBase ?? productUnit.conversion_to_base ?? 1,
+  ),
+  salePrice: String(productUnit.salePrice ?? productUnit.sale_price ?? ""),
+  costPrice: String(productUnit.costPrice ?? productUnit.cost_price ?? ""),
+  isBase: Boolean(productUnit.isBase ?? productUnit.is_base),
+  isActive: productUnit.isActive ?? productUnit.is_active ?? true,
+  sortOrder: productUnit.sortOrder ?? productUnit.sort_order ?? index + 1,
+  isNew: false,
+  isDirty: false,
+  isDeleted: false,
+});
+
+const normalizeDecimal = (value: string | number): string => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? String(parsed) : "";
+};
+
+const createProductUnitSnapshot = (
+  item: ProductUnitFormItem,
+): ProductUnitSnapshot => ({
+  unitId: String(item.unitId),
+  barcode: normalizeBarcode(item.barcode),
+  conversionToBase: normalizeDecimal(item.conversionToBase),
+  salePrice: normalizeDecimal(item.salePrice),
+  costPrice: normalizeDecimal(item.costPrice),
+  isBase: item.isBase,
+  isActive: item.isActive,
+  sortOrder: Number(item.sortOrder) || 1,
+});
+
+const hasProductUnitChanged = (
+  item: ProductUnitFormItem,
+  original?: ProductUnitSnapshot,
+): boolean => {
+  if (!original) return item.isDirty;
+
+  const current = createProductUnitSnapshot(item);
+  return (
+    current.unitId !== original.unitId ||
+    current.barcode !== original.barcode ||
+    current.conversionToBase !== original.conversionToBase ||
+    current.salePrice !== original.salePrice ||
+    current.costPrice !== original.costPrice ||
+    current.isBase !== original.isBase ||
+    current.isActive !== original.isActive ||
+    current.sortOrder !== original.sortOrder
+  );
+};
+
+const toProductUnitPayload = (
+  item: ProductUnitFormItem,
+): CreateProductUnitPayload => ({
+  unitId: item.unitId,
+  barcode: normalizeBarcode(item.barcode),
+  conversionToBase: item.isBase ? 1 : Number(item.conversionToBase) || 0,
+  salePrice: Number(item.salePrice) || 0,
+  costPrice: Number(item.costPrice) || 0,
+  isBase: item.isBase,
+  isActive: item.isActive,
+  sortOrder: item.sortOrder,
+});
+
+const toUpdateProductUnitPayload = (
+  item: ProductUnitFormItem,
+): UpdateProductUnitPayload => ({
+  unitId: item.unitId,
+  barcode: normalizeBarcode(item.barcode),
+  conversionToBase: item.isBase ? 1 : Number(item.conversionToBase) || 0,
+  salePrice: Number(item.salePrice) || 0,
+  costPrice: Number(item.costPrice) || 0,
+  isActive: item.isActive,
+  sortOrder: item.sortOrder,
+});
+
+const findMatchingProductUnit = (
+  item: ProductUnitFormItem,
+  productUnitsList: ProductUnit[],
+): ProductUnit | null => {
+  const barcode = normalizeBarcode(item.barcode);
+  const unitId = String(item.unitId || "");
+
+  return (
+    productUnitsList.find(
+      (productUnit) =>
+        barcode &&
+        normalizeBarcode(productUnit.barcode ?? "") === barcode,
+    ) ??
+    productUnitsList.find((productUnit) => String(getUnitId(productUnit)) === unitId) ??
+    null
+  );
 };
 
 // แปลง image_url ที่ได้จาก API (เช่น "/images/xxx.jpg") ให้เป็น URL เต็มสำหรับแสดงผล <img>
@@ -479,11 +899,21 @@ export default function ProductLandingpage() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isScanningBarcode, setIsScanningBarcode] = useState(false);
   const [unitGroups, setUnitGroups] = useState<UnitGroup[]>([]);
+  const [units, setUnits] = useState<Unit[]>([]);
+  const [productUnits, setProductUnits] = useState<ProductUnitFormItem[]>([
+    createEmptyProductUnit(1),
+  ]);
+  const [isUnitLinkingEnabled, setIsUnitLinkingEnabled] = useState(false);
+  const [isUnitSectionOpen, setIsUnitSectionOpen] = useState(false);
   const [selectedUnitGroupId, setSelectedUnitGroupId] = useState("");
   const [isLoadingUnitGroups, setIsLoadingUnitGroups] = useState(false);
   const [unitGroupsError, setUnitGroupsError] = useState<string | null>(null);
+  const [productUnitsError, setProductUnitsError] = useState<string | null>(null);
   const unitGroupsLoadingRef = useRef(false);
   const unitGroupsRequestRef = useRef<Promise<UnitGroup[]> | null>(null);
+  const originalProductUnitsRef = useRef<Map<string, ProductUnitSnapshot>>(
+    new Map(),
+  );
 
   // รูปสินค้าที่เลือกใหม่ (ยังไม่อัปโหลด) + พรีวิวในฟอร์ม
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -523,6 +953,9 @@ export default function ProductLandingpage() {
     const request = (async () => {
       const groups = await fetchUnitGroupsWithUnits();
       setUnitGroups(groups);
+      getUnits()
+        .then(setUnits)
+        .catch((err) => console.warn("GET /units failed, using grouped units", err));
       return groups;
     })();
 
@@ -723,6 +1156,20 @@ export default function ProductLandingpage() {
   );
 
   const availableUnits = selectedUnitGroup?.units ?? [];
+  const allUnits = useMemo(() => {
+    const byId = new Map<string, Unit>();
+    unitGroups.forEach((unitGroup) => {
+      unitGroup.units.forEach((unit) => byId.set(String(unit.id), unit));
+    });
+    units.forEach((unit) => byId.set(String(unit.id), unit));
+    return Array.from(byId.values());
+  }, [unitGroups, units]);
+
+  const unitById = useMemo(() => {
+    const map = new Map<string, Unit>();
+    allUnits.forEach((unit) => map.set(String(unit.id), unit));
+    return map;
+  }, [allUnits]);
 
   useEffect(() => {
     if (isModalOpen) {
@@ -777,8 +1224,13 @@ export default function ProductLandingpage() {
       ...EMPTY_FORM,
       category_id: sortedCategories.length > 0 ? String(sortedCategories[0].id) : "",
     });
+    setProductUnits([createEmptyProductUnit(1)]);
+    originalProductUnitsRef.current = new Map();
+    setIsUnitLinkingEnabled(false);
+    setIsUnitSectionOpen(false);
     setSelectedUnitGroupId("");
     setSubmitError(null);
+    setProductUnitsError(null);
     setOriginalImageUrl(null);
     resetImageSelection();
     setIsModalOpen(true);
@@ -790,6 +1242,13 @@ export default function ProductLandingpage() {
       fetchProductDetail(product.id).catch(() => null),
       loadUnitGroups(),
     ]);
+    const loadedProductUnits = await getProductUnits(product.id).catch((err) => {
+      console.warn("Error fetching product units:", err);
+      setProductUnitsError(
+        err instanceof Error ? err.message : "ไม่สามารถโหลดหน่วยสินค้าเดิมได้",
+      );
+      return [];
+    });
     const sourceProduct = productDetail ?? product;
     const matchedUnit = findUnitByCode(groups, sourceProduct.unit_code);
 
@@ -799,7 +1258,44 @@ export default function ProductLandingpage() {
       );
     }
 
+    const loadedUnits = groups.flatMap((unitGroup) => unitGroup.units);
+    const mappedProductUnits =
+      loadedProductUnits.length > 0
+        ? loadedProductUnits.map((item, index) =>
+            mapProductUnitToFormItem(item, index, loadedUnits),
+          )
+        : [
+            {
+              ...createEmptyProductUnit(1),
+              unitId: matchedUnit ? String(matchedUnit.unit.id) : "",
+              barcode: sourceProduct.barcode ?? "",
+              salePrice:
+                sourceProduct.sale_price !== undefined &&
+                sourceProduct.sale_price !== null
+                  ? String(sourceProduct.sale_price)
+                  : "",
+              costPrice:
+                sourceProduct.cost_price !== undefined &&
+                sourceProduct.cost_price !== null
+                  ? String(sourceProduct.cost_price)
+                  : "",
+              isNew: true,
+            },
+          ];
+
+    originalProductUnitsRef.current = new Map(
+      mappedProductUnits
+        .filter((item) => item.productUnitId)
+        .map((item) => [
+          String(item.productUnitId),
+          createProductUnitSnapshot(item),
+        ]),
+    );
+
     setEditingProductId(sourceProduct.id);
+    setIsUnitLinkingEnabled(loadedProductUnits.length > 1);
+    setIsUnitSectionOpen(loadedProductUnits.length > 1);
+    setProductUnits(mappedProductUnits);
     setForm({
       sku: sourceProduct.sku ?? "",
       barcode: sourceProduct.barcode ?? "",
@@ -842,6 +1338,23 @@ export default function ProductLandingpage() {
     const response = await authorizedFetch(`/products/${productId}`);
     if (!response.ok) return null;
     return unwrapProductResponse(await response.json().catch(() => null));
+  };
+
+  const findProductByBarcode = async (barcode: string): Promise<Product | null> => {
+    const response = await authorizedFetch(
+      `/products?page=1&limit=20&search=${encodeURIComponent(barcode)}`,
+    );
+    if (!response.ok) return null;
+
+    const productsList = unwrapProductsListResponse(
+      await response.json().catch(() => null),
+    );
+
+    return (
+      productsList.find((product) => normalizeBarcode(product.barcode ?? "") === barcode) ??
+      productsList[0] ??
+      null
+    );
   };
 
   const openEditModalFromScannedProduct = async (scannedProduct: ScannedProduct) => {
@@ -909,8 +1422,14 @@ export default function ProductLandingpage() {
       const result = await scanProductByBarcode(barcode);
 
       if (result.code === "PRODUCT_NOT_FOUND" || !result.success) {
+        const existingProduct = await findProductByBarcode(barcode).catch(() => null);
+
+        if (existingProduct) {
+          await openEditModal(existingProduct);
+          return;
+        }
+
         setEditingProductId(null);
-        // 🔴 แก้ไขตรงนี้: เปลี่ยนข้อความและให้เป็นสีเขียว
         setSubmitError(PRODUCT_NOT_FOUND_ADDABLE_MESSAGE);
         return;
       }
@@ -939,6 +1458,11 @@ export default function ProductLandingpage() {
     setEditingProductId(null);
     setOriginalImageUrl(null);
     setSelectedUnitGroupId("");
+    setProductUnits([createEmptyProductUnit(1)]);
+    originalProductUnitsRef.current = new Map();
+    setIsUnitLinkingEnabled(false);
+    setIsUnitSectionOpen(false);
+    setProductUnitsError(null);
     setIsModalOpen(false);
   };
 
@@ -968,43 +1492,185 @@ export default function ProductLandingpage() {
     updateForm("image_url", "");
   };
 
+  const updateProductUnitItem = <K extends keyof ProductUnitFormItem>(
+    clientId: string,
+    key: K,
+    value: ProductUnitFormItem[K],
+  ) => {
+    setProductUnits((current) =>
+      current.map((item) =>
+        item.clientId === clientId
+          ? { ...item, [key]: value, isDirty: item.isNew ? item.isDirty : true }
+          : item,
+      ),
+    );
+    setProductUnitsError(null);
+  };
+
+  const handleSetBaseUnit = (clientId: string) => {
+    setProductUnits((current) =>
+      current.map((item) =>
+        item.clientId === clientId
+          ? {
+              ...item,
+              isBase: true,
+              conversionToBase: "1",
+              isDirty: item.isNew ? item.isDirty : true,
+            }
+          : {
+              ...item,
+              isBase: false,
+              isDirty: item.isNew ? item.isDirty : true,
+            },
+      ),
+    );
+    setProductUnitsError("หน่วยฐานต้องมีค่าเท่ากับ 1");
+  };
+
+  const addProductUnitItem = () => {
+    setProductUnits((current) => [
+      ...current,
+      createEmptyProductUnit(current.length + 1),
+    ]);
+    setProductUnitsError(null);
+  };
+
+  const removeProductUnitItem = (clientId: string) => {
+    setProductUnits((current) => {
+      const target = current.find((item) => item.clientId === clientId);
+      if (!target) return current;
+      if (target.isBase) {
+        setProductUnitsError("ไม่สามารถลบหน่วยฐานได้ กรุณาเลือกหน่วยฐานใหม่ก่อน");
+        return current;
+      }
+      if (target.isNew) {
+        return current.filter((item) => item.clientId !== clientId);
+      }
+      return current.map((item) =>
+        item.clientId === clientId
+          ? { ...item, isDeleted: true, isDirty: true }
+          : item,
+      );
+    });
+  };
+
+  const activeProductUnits = productUnits.filter((item) => !item.isDeleted);
+
+  const openUnitSection = () => {
+    setProductUnits((current) => {
+      const activeUnits = current.filter((item) => !item.isDeleted);
+      if (activeUnits.length > 0) {
+        return current;
+      }
+
+      const matchedUnit = availableUnits.find(
+        (unit) => unit.unit_code === form.unit_code,
+      );
+      return [
+        {
+          ...createEmptyProductUnit(1),
+          unitId: matchedUnit ? String(matchedUnit.id) : "",
+          barcode: form.barcode,
+          salePrice: form.sale_price,
+          costPrice: form.cost_price,
+        },
+      ];
+    });
+    setIsUnitLinkingEnabled(true);
+    setIsUnitSectionOpen(true);
+    setProductUnitsError(null);
+  };
+
+  const closeUnitSection = () => {
+    setIsUnitSectionOpen(false);
+    setProductUnitsError(null);
+  };
+
+  const validateProductUnits = (): string | null => {
+    if (activeProductUnits.length === 0) {
+      return "กรุณาเพิ่มหน่วยขายอย่างน้อย 1 รายการ";
+    }
+
+    if (!activeProductUnits.some((item) => item.isBase)) {
+      return "กรุณาเลือกหน่วยฐานก่อน";
+    }
+
+    const unitIds = new Set<string>();
+    const barcodes = new Set<string>();
+
+    for (const [index, item] of activeProductUnits.entries()) {
+      if (!item.unitId) {
+        const rowLabel = item.barcode.trim()
+          ? `แถวที่ ${index + 1} บาร์โค้ด ${item.barcode.trim()}`
+          : `แถวที่ ${index + 1}`;
+        return `กรุณาเลือกหน่วยขายให้ครบ (${rowLabel})`;
+      }
+
+      const unitId = String(item.unitId);
+      if (unitIds.has(unitId)) return "ไม่สามารถเลือกหน่วยซ้ำได้";
+      unitIds.add(unitId);
+
+      const barcode = normalizeBarcode(item.barcode);
+      if (!barcode) return "กรุณากรอกบาร์โค้ดของหน่วยขายให้ครบ";
+      if (barcodes.has(barcode)) return "ไม่สามารถกรอกบาร์โค้ดซ้ำในฟอร์มได้";
+      barcodes.add(barcode);
+
+      if (item.isBase && Number(item.conversionToBase) !== 1) {
+        return "หน่วยฐานต้องมีจำนวนเทียบหน่วยฐานเท่ากับ 1";
+      }
+
+      if (!item.isBase && Number(item.conversionToBase) <= 0) {
+        return "จำนวนเทียบหน่วยฐานต้องมากกว่า 0";
+      }
+    }
+
+    return null;
+  };
+
   // ตรวจสอบว่าสามารถบันทึกได้หรือไม่
   const isFormValid = useMemo(() => {
-    const trimmedBarcode = form.barcode.trim();
     const trimmedProductName = form.product_name.trim();
-    
-    return trimmedBarcode !== "" && form.unit_code !== "" && trimmedProductName !== "";
-  }, [form.barcode, form.product_name, form.unit_code]);
+    if (isUnitLinkingEnabled) {
+      return activeProductUnits.length > 0 && trimmedProductName !== "";
+    }
+    return (
+      trimmedProductName !== "" &&
+      form.barcode.trim() !== "" &&
+      form.unit_code !== ""
+    );
+  }, [
+    activeProductUnits.length,
+    form.barcode,
+    form.product_name,
+    form.unit_code,
+    isUnitLinkingEnabled,
+  ]);
 
   const handleSubmitProduct = async (event: FormEvent) => {
     event.preventDefault();
 
     const trimmedName = form.product_name.trim();
     const trimmedBarcode = normalizeBarcode(form.barcode);
-
-    // เพิ่มการตรวจสอบหน่วย
-    if (!form.unit_code) {
-      setSubmitError("กรุณาเลือกหน่วย");
-      return;
-    }
-
     const selectedUnit = availableUnits.find(
       (unit) => unit.unit_code === form.unit_code,
     );
-
-    if (!selectedUnit) {
-      setSubmitError("ไม่พบข้อมูลหน่วยที่เลือก กรุณาเลือกหน่วยอีกครั้ง");
-      return;
-    }
-
-    if (!trimmedBarcode) {
-      setSubmitError("กรุณากรอกบาร์โค้ด");
-      return;
-    }
-
-    if (trimmedBarcode !== form.barcode) {
-      updateForm("barcode", trimmedBarcode);
-    }
+    const productUnitsForSubmit: ProductUnitFormItem[] = isUnitLinkingEnabled
+      ? activeProductUnits
+      : [
+          {
+            ...createEmptyProductUnit(1),
+            unitId: selectedUnit ? String(selectedUnit.id) : "",
+            barcode: trimmedBarcode,
+            conversionToBase: "1",
+            salePrice: form.sale_price,
+            costPrice: form.cost_price,
+            isNew: editingProductId === null,
+            isDirty: editingProductId !== null,
+          },
+        ];
+    const productUnitsValidationError = isUnitLinkingEnabled
+      ? validateProductUnits()
+      : null;
 
     if (!trimmedName) {
       setSubmitError("กรุณากรอกชื่อสินค้า");
@@ -1016,12 +1682,53 @@ export default function ProductLandingpage() {
       return;
     }
 
+    if (!isUnitLinkingEnabled) {
+      if (!form.unit_code || !selectedUnit) {
+        setSubmitError("กรุณาเลือกหน่วย");
+        return;
+      }
+
+      if (!trimmedBarcode) {
+        setSubmitError("กรุณากรอกบาร์โค้ด");
+        return;
+      }
+
+      if (trimmedBarcode !== form.barcode) {
+        updateForm("barcode", trimmedBarcode);
+      }
+    }
+
+    if (productUnitsValidationError) {
+      setProductUnitsError(productUnitsValidationError);
+      setSubmitError(productUnitsValidationError);
+      return;
+    }
+
     setIsSubmitting(true);
     setSubmitError(null);
+    setProductUnitsError(null);
 
     const isEditing = editingProductId !== null;
 
     try {
+      if (!isEditing && isUnitLinkingEnabled) {
+        for (const item of activeProductUnits) {
+          const unitBarcode = normalizeBarcode(item.barcode);
+          const existingProduct = unitBarcode
+            ? await findProductByBarcode(unitBarcode).catch(() => null)
+            : null;
+
+          if (existingProduct) {
+            const unitName =
+              getUnitName(unitById.get(String(item.unitId))) || "หน่วยสินค้า";
+            const message = `${unitName}: บาร์โค้ด ${unitBarcode} มีอยู่ในระบบแล้ว กรุณาแก้ไขสินค้าเดิมแทนการเพิ่มสินค้าใหม่`;
+            setProductUnitsError(message);
+            setSubmitError(message);
+            return;
+          }
+        }
+      }
+
       // ถ้ามีการเลือกรูปใหม่ ให้อัปโหลดก่อน แล้วค่อยเอา url ไปบันทึกกับสินค้า
       let imageUrl: string | null | "" = form.image_url;
 
@@ -1046,17 +1753,22 @@ export default function ProductLandingpage() {
           : undefined;
 
       const isService = form.price_mode === "SERVICE_PRICE";
+      const baseUnitItem =
+        productUnitsForSubmit.find((item) => item.isBase) ?? productUnitsForSubmit[0];
+      const baseUnit = unitById.get(String(baseUnitItem.unitId));
+      const baseBarcode = normalizeBarcode(baseUnitItem.barcode);
 
       const basePayload = {
         sku: trimmedSku || undefined,
-        barcode: trimmedBarcode,
+        barcode: baseBarcode,
         description: trimmedDescription || (isService ? "" : isEditing ? null : undefined),
         product_name: trimmedName,
         category_id: Number(form.category_id) || form.category_id,
-        unit_code: selectedUnit.unit_code,
+        unit_code: baseUnit?.unit_code ?? baseUnit?.unitCode ?? form.unit_code,
+        unit_id: Number(baseUnitItem.unitId) || baseUnitItem.unitId,
         price_mode: form.price_mode,
-        cost_price: isService ? 0 : Number(form.cost_price) || 0,
-        sale_price: isService ? 0 : Number(form.sale_price) || 0,
+        cost_price: isService ? 0 : Number(baseUnitItem.costPrice) || 0,
+        sale_price: isService ? 0 : Number(baseUnitItem.salePrice) || 0,
         track_stock: isService ? false : form.track_stock,
         allow_discount: isService ? false : form.allow_discount,
         status: "ACTIVE",
@@ -1094,9 +1806,174 @@ export default function ProductLandingpage() {
         throw new Error(message);
       }
 
+      const savedProduct = unwrapProductResponse(await response.json().catch(() => null));
+      const savedProductId = savedProduct?.id ?? editingProductId;
+
+      if (!savedProductId) {
+        throw new Error("บันทึกสินค้าแล้ว แต่ไม่พบรหัสสินค้าใน Response");
+      }
+
+      const failedUnitNames: string[] = [];
+      const unitsToSave = isUnitLinkingEnabled ? productUnits : [];
+      const activeUnitsToSave = unitsToSave.filter((item) => !item.isDeleted);
+      const newUnits = activeUnitsToSave.filter(
+        (item) => item.isNew || !item.productUnitId,
+      );
+      const updatedUnits = activeUnitsToSave.filter((item) => {
+        if (item.isNew || !item.productUnitId) return false;
+        return hasProductUnitChanged(
+          item,
+          originalProductUnitsRef.current.get(String(item.productUnitId)),
+        );
+      });
+      const deletedUnits = unitsToSave.filter(
+        (item) => item.isDeleted && !item.isNew && Boolean(item.productUnitId),
+      );
+      const createdProductUnitIds = new Map<string, string | number>();
+      const originalBaseProductUnitId = Array.from(
+        originalProductUnitsRef.current.entries(),
+      ).find(([, snapshot]) => snapshot.isBase)?.[0];
+      const currentBaseUnit = activeUnitsToSave.find((item) => item.isBase);
+
+      for (const item of newUnits) {
+        const unitName = getUnitName(unitById.get(String(item.unitId))) || "หน่วยสินค้า";
+        try {
+          const createdUnit = await createProductUnit(
+            savedProductId,
+            toProductUnitPayload(item),
+          );
+          const createdUnitId = getProductUnitId(createdUnit);
+          if (createdUnitId) {
+            createdProductUnitIds.set(item.clientId, createdUnitId);
+          }
+        } catch (err) {
+          if (import.meta.env.DEV) {
+            console.error("Product unit save failed", {
+              mode: "CREATE",
+              productId: savedProductId,
+              productUnitId: item.productUnitId,
+              barcode: item.barcode,
+              error: err,
+            });
+          }
+          failedUnitNames.push(
+            `เพิ่มหน่วย “${unitName}” ไม่สำเร็จ: ${
+              err instanceof Error ? err.message : "ไม่สำเร็จ"
+            }`,
+          );
+        }
+      }
+
+      for (const item of updatedUnits) {
+        const unitName = getUnitName(unitById.get(String(item.unitId))) || "หน่วยสินค้า";
+        try {
+          await updateProductUnit(
+            savedProductId,
+            item.productUnitId as string | number,
+            toUpdateProductUnitPayload(item),
+          );
+        } catch (err) {
+          if (import.meta.env.DEV) {
+            console.error("Product unit save failed", {
+              mode: "UPDATE",
+              productId: savedProductId,
+              productUnitId: item.productUnitId,
+              barcode: item.barcode,
+              error: err,
+            });
+          }
+          failedUnitNames.push(
+            `แก้ไขหน่วย “${unitName}” ไม่สำเร็จ: ${
+              err instanceof Error ? err.message : "ไม่สำเร็จ"
+            }`,
+          );
+        }
+      }
+
+      const currentBaseProductUnitId =
+        currentBaseUnit?.productUnitId ??
+        (currentBaseUnit
+          ? createdProductUnitIds.get(currentBaseUnit.clientId)
+          : undefined);
+
+      if (
+        currentBaseProductUnitId &&
+        String(currentBaseProductUnitId) !== String(originalBaseProductUnitId ?? "")
+      ) {
+        try {
+          await setBaseProductUnit(savedProductId, currentBaseProductUnitId);
+        } catch (err) {
+          failedUnitNames.push(
+            `ตั้งหน่วยฐานไม่สำเร็จ: ${
+              err instanceof Error ? err.message : "ไม่สำเร็จ"
+            }`,
+          );
+        }
+      }
+
+      for (const item of deletedUnits) {
+        const unitName = getUnitName(unitById.get(String(item.unitId))) || "หน่วยสินค้า";
+        try {
+          await deleteProductUnit(
+            savedProductId,
+            item.productUnitId as string | number,
+          );
+        } catch (err) {
+          if (import.meta.env.DEV) {
+            console.error("Product unit save failed", {
+              mode: "DELETE",
+              productId: savedProductId,
+              productUnitId: item.productUnitId,
+              barcode: item.barcode,
+              error: err,
+            });
+          }
+          failedUnitNames.push(
+            `ลบหน่วย “${unitName}” ไม่สำเร็จ: ${
+              err instanceof Error ? err.message : "ไม่สำเร็จ"
+            }`,
+          );
+        }
+      }
+
+      if (failedUnitNames.length > 0) {
+        if (!isEditing) {
+          await authorizedFetch(`/products/${savedProductId}`, {
+            method: "DELETE",
+          }).catch((err) => {
+            console.warn("Rollback created product failed:", err);
+          });
+        }
+
+        throw new Error(
+          isEditing
+            ? `บันทึกสินค้าแล้ว แต่บันทึกหน่วยสินค้าไม่ครบ\n${failedUnitNames.join("\n")}`
+            : `เพิ่มสินค้าไม่สำเร็จ เพราะบันทึกหน่วยสินค้าไม่ครบ\n${failedUnitNames.join("\n")}`,
+        );
+      }
+
+      if (isUnitLinkingEnabled) {
+        const refreshedUnits = await getProductUnits(savedProductId).catch(() => []);
+        const refreshedFormUnits = refreshedUnits.map((item, index) =>
+          mapProductUnitToFormItem(item, index, allUnits),
+        );
+        originalProductUnitsRef.current = new Map(
+          refreshedFormUnits
+            .filter((item) => item.productUnitId)
+            .map((item) => [
+              String(item.productUnitId),
+              createProductUnitSnapshot(item),
+            ]),
+        );
+      }
+
       setIsModalOpen(false);
       setEditingProductId(null);
       setForm(EMPTY_FORM);
+      setProductUnits([createEmptyProductUnit(1)]);
+      originalProductUnitsRef.current = new Map();
+      setIsUnitLinkingEnabled(false);
+      setIsUnitSectionOpen(false);
       setSelectedUnitGroupId("");
       resetImageSelection();
 
@@ -1613,6 +2490,288 @@ export default function ProductLandingpage() {
                     {unitGroupsError}
                   </p>
                 ) : null}
+
+                <div className="col-span-4">
+                  {!isUnitSectionOpen ? (
+                    <button
+                      type="button"
+                      onClick={openUnitSection}
+                      className="flex w-full items-center justify-between rounded-xl border border-dashed border-[#1d6fd8]/40 bg-[#1d6fd8]/5 px-4 py-3 text-left transition-colors hover:bg-[#1d6fd8]/10"
+                    >
+                      <span className="flex items-center gap-3">
+                        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-[#1d6fd8] shadow-sm">
+                          <IconBox size={20} />
+                        </span>
+                        <span>
+                          <span className="block text-sm font-semibold text-slate-700">
+                            เชื่อมโยงราคา แพ็ค / ลัง
+                          </span>
+                          <span className="block text-xs text-slate-500">
+                            ใช้เมื่อสินค้าตัวเดียวมีหลายหน่วยขาย เช่น กล่อง แพ็ค ลัง
+                          </span>
+                        </span>
+                      </span>
+                      <span className="rounded-lg bg-white px-3 py-2 text-xs font-medium text-[#1d6fd8] shadow-sm">
+                        เปิดเมนู
+                      </span>
+                    </button>
+                  ) : (
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <h3 className="text-base font-semibold text-slate-800">
+                            เชื่อมโยงหน่วยขายเป็นสินค้าตัวเดียว
+                          </h3>
+                          <p className="mt-1 text-sm text-slate-500">
+                            กำหนดราคาขายและบาร์โค้ดแยกตามหน่วย โดยสต๊อกอ้างอิงจากหน่วยฐาน
+                          </p>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={addProductUnitItem}
+                            className="flex items-center gap-1.5 rounded-xl bg-[#1d6fd8] px-3 py-2 text-xs font-medium text-white hover:bg-[#1a5fc0]"
+                          >
+                            <IconPlus size={15} />
+                            เพิ่มแพ็ค/ลัง
+                          </button>
+                          <button
+                            type="button"
+                            onClick={closeUnitSection}
+                            className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-500 hover:bg-slate-50"
+                          >
+                            ปิดเมนู
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-3">
+                        {activeProductUnits.map((item, index) => {
+                          const selectedUnitName =
+                            getUnitName(unitById.get(String(item.unitId))) ||
+                            (item.isBase ? "หน่วยฐาน" : `หน่วยที่ ${index + 1}`);
+
+                          return (
+                            <div
+                              key={item.clientId}
+                              className={`rounded-xl border p-3 ${
+                                item.isBase
+                                  ? "border-[#1d6fd8]/30 bg-[#1d6fd8]/5"
+                                  : "border-slate-200 bg-slate-50"
+                              }`}
+                            >
+                              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-sm font-semibold text-slate-600 shadow-sm">
+                                    {index + 1}
+                                  </span>
+                                  <div>
+                                    <p className="text-sm font-semibold text-slate-700">
+                                      {selectedUnitName}
+                                    </p>
+                                    <p className="text-xs text-slate-500">
+                                      {item.isBase
+                                        ? "หน่วยฐานสำหรับคิดสต๊อก"
+                                        : "หน่วยขายที่แปลงจากหน่วยฐาน"}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  {item.isBase ? (
+                                    <span className="rounded-full bg-[#1d6fd8] px-2.5 py-1 text-xs font-medium text-white">
+                                      หน่วยฐาน
+                                    </span>
+                                  ) : null}
+                                  {!item.isActive ? (
+                                    <span className="rounded-full bg-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600">
+                                      ปิดใช้งาน
+                                    </span>
+                                  ) : null}
+                                  <button
+                                    type="button"
+                                    onClick={() => removeProductUnitItem(item.clientId)}
+                                    className="rounded-lg p-2 text-red-500 hover:bg-red-50"
+                                    aria-label="ลบหน่วยขาย"
+                                  >
+                                    <IconTrash size={16} />
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+                                <div>
+                                  <label className="mb-1 block text-xs font-medium text-slate-500">
+                                    หน่วยขาย
+                                  </label>
+                                  <select
+                                    value={String(item.unitId)}
+                                    onChange={(event) =>
+                                      updateProductUnitItem(
+                                        item.clientId,
+                                        "unitId",
+                                        event.target.value,
+                                      )
+                                    }
+                                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+                                  >
+                                    <option value="">เลือกหน่วย</option>
+                                    {allUnits.map((unit) => (
+                                      <option key={unit.id} value={String(unit.id)}>
+                                        {getUnitName(unit)}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+
+                                <div>
+                                  <label className="mb-1 block text-xs font-medium text-slate-500">
+                                    บาร์โค้ดหน่วยนี้
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={item.barcode}
+                                    onChange={(event) =>
+                                      updateProductUnitItem(
+                                        item.clientId,
+                                        "barcode",
+                                        event.target.value,
+                                      )
+                                    }
+                                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+                                  />
+                                </div>
+
+                                <div>
+                                  <label className="mb-1 block text-xs font-medium text-slate-500">
+                                    1 หน่วยนี้เท่ากับ
+                                  </label>
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      value={item.conversionToBase}
+                                      disabled={item.isBase}
+                                      onChange={(event) =>
+                                        updateProductUnitItem(
+                                          item.clientId,
+                                          "conversionToBase",
+                                          event.target.value,
+                                        )
+                                      }
+                                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20 disabled:bg-slate-100 disabled:text-slate-400"
+                                    />
+                                    <span className="whitespace-nowrap text-xs text-slate-500">
+                                      หน่วยฐาน
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <label className="mb-1 block text-xs font-medium text-slate-500">
+                                    ลำดับ
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    value={item.sortOrder}
+                                    onChange={(event) =>
+                                      updateProductUnitItem(
+                                        item.clientId,
+                                        "sortOrder",
+                                        Number(event.target.value) || 1,
+                                      )
+                                    }
+                                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+                                  />
+                                </div>
+
+                                <div>
+                                  <label className="mb-1 block text-xs font-medium text-slate-500">
+                                    ราคาขาย
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step="0.01"
+                                    value={item.salePrice}
+                                    onChange={(event) =>
+                                      updateProductUnitItem(
+                                        item.clientId,
+                                        "salePrice",
+                                        event.target.value,
+                                      )
+                                    }
+                                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+                                  />
+                                </div>
+
+                                <div>
+                                  <label className="mb-1 block text-xs font-medium text-slate-500">
+                                    ราคาทุน
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step="0.01"
+                                    value={item.costPrice}
+                                    onChange={(event) =>
+                                      updateProductUnitItem(
+                                        item.clientId,
+                                        "costPrice",
+                                        event.target.value,
+                                      )
+                                    }
+                                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+                                  />
+                                </div>
+
+                                <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-600">
+                                  <input
+                                    type="checkbox"
+                                    checked={item.isBase}
+                                    onChange={(event) => {
+                                      if (event.target.checked) {
+                                        handleSetBaseUnit(item.clientId);
+                                      } else {
+                                        setProductUnitsError(
+                                          "ห้ามยกเลิกหน่วยฐาน กรุณาเลือกหน่วยอื่นเป็นฐานก่อน",
+                                        );
+                                      }
+                                    }}
+                                    className="h-4 w-4 accent-[#1d6fd8]"
+                                  />
+                                  ตั้งเป็นหน่วยฐาน
+                                </label>
+
+                                <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-600">
+                                  <input
+                                    type="checkbox"
+                                    checked={item.isActive}
+                                    onChange={(event) =>
+                                      updateProductUnitItem(
+                                        item.clientId,
+                                        "isActive",
+                                        event.target.checked,
+                                      )
+                                    }
+                                    className="h-4 w-4 accent-[#1d6fd8]"
+                                  />
+                                  เปิดขายหน่วยนี้
+                                </label>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {productUnitsError ? (
+                        <p className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-600">
+                          {productUnitsError}
+                        </p>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
 
                 <div className="col-span-4">
                   <label className="mb-1.5 block text-sm font-medium text-slate-600">

@@ -33,6 +33,40 @@ export interface FavoriteProduct {
   barcode?: string;
   category_id?: number | string | null;
   category?: ProductCategory | null;
+  productUnits?: FavoriteProductUnit[];
+  product_units?: FavoriteProductUnit[];
+  units?: FavoriteProductUnit[];
+  [key: string]: unknown;
+}
+
+export interface FavoriteProductUnit {
+  id?: number | string;
+  productUnitId?: number | string;
+  product_unit_id?: number | string;
+  unitId?: number | string;
+  unit_id?: number | string;
+  unit?: {
+    id?: number | string;
+    unitCode?: string;
+    unit_code?: string;
+    unitNameTh?: string;
+    unit_name_th?: string;
+    unitName?: string;
+    unit_name?: string;
+  };
+  barcode?: string | null;
+  unitCode?: string | null;
+  unit_code?: string | null;
+  unitNameTh?: string | null;
+  unit_name_th?: string | null;
+  unitName?: string | null;
+  unit_name?: string | null;
+  conversionToBase?: number | string | null;
+  conversion_to_base?: number | string | null;
+  salePrice?: number | string | null;
+  sale_price?: number | string | null;
+  isBase?: boolean;
+  is_base?: boolean;
   [key: string]: unknown;
 }
 
