@@ -22,11 +22,27 @@ export interface ProductCategory {
 
 export interface FavoriteProduct {
   id: number | string;
+  productId?: number | string;
+  product_id?: number | string;
+  productUnitId?: number | string | null;
+  product_unit_id?: number | string | null;
   product_name: string;
+  productName?: string;
   sale_price: number;
+  salePrice?: number | string | null;
   price_mode?: "FIXED_PRICE" | "WEIGHT_PRICE" | "OPEN_PRICE" | "SERVICE_PRICE";
   unit_code?: string;
+  unitCode?: string;
+  unitNameTh?: string | null;
+  unit_name_th?: string | null;
+  unit_id?: number | string | null;
+  unitId?: number | string | null;
+  conversionToBase?: number | string | null;
+  conversion_to_base?: number | string | null;
+  isBase?: boolean;
+  is_base?: boolean;
   stock_qty?: number;
+  cost_price?: number | string | null;
   allow_discount?: boolean;
   image_url?: string | null;
   sku?: string;
@@ -75,7 +91,27 @@ interface FavoriteItem {
   favorite_group_id?: number | string;
   group_id?: number | string;
   favorite_group?: { id: number | string };
-  product_id: number | string;
+  product_id?: number | string;
+  productId?: number | string;
+  productUnitId?: number | string | null;
+  product_unit_id?: number | string | null;
+  productName?: string;
+  product_name?: string;
+  barcode?: string | null;
+  unitId?: number | string | null;
+  unit_id?: number | string | null;
+  unitCode?: string | null;
+  unit_code?: string | null;
+  unitNameTh?: string | null;
+  unit_name_th?: string | null;
+  conversionToBase?: number | string | null;
+  conversion_to_base?: number | string | null;
+  salePrice?: number | string | null;
+  sale_price?: number | string | null;
+  isBase?: boolean | null;
+  is_base?: boolean | null;
+  productUnit?: FavoriteProductUnit | null;
+  product_unit?: FavoriteProductUnit | null;
   product?: FavoriteProduct;
   [key: string]: unknown;
 }
@@ -180,6 +216,71 @@ const readApiError = async (response: Response, fallback: string) => {
 const unwrapList = <T,>(payload: ListResponse<T>): T[] =>
   Array.isArray(payload) ? payload : payload.data ?? [];
 
+const unwrapNestedList = <T,>(payload: unknown): T[] => {
+  if (Array.isArray(payload)) return payload as T[];
+  if (!payload || typeof payload !== "object") return [];
+
+  const source = payload as {
+    data?: unknown;
+    items?: unknown;
+    units?: unknown;
+    productUnits?: unknown;
+    product_units?: unknown;
+  };
+  if (Array.isArray(source.items)) return source.items as T[];
+  if (Array.isArray(source.units)) return source.units as T[];
+  if (Array.isArray(source.productUnits)) return source.productUnits as T[];
+  if (Array.isArray(source.product_units)) return source.product_units as T[];
+  if (Array.isArray(source.data)) return source.data as T[];
+  if (source.data && typeof source.data === "object") return unwrapNestedList<T>(source.data);
+
+  return [];
+};
+
+const unwrapProductDetail = (payload: unknown): FavoriteProduct | null => {
+  if (!payload || typeof payload !== "object") return null;
+
+  const source = payload as {
+    data?: unknown;
+    product?: unknown;
+    item?: unknown;
+  };
+  if (source.product && typeof source.product === "object") {
+    return source.product as FavoriteProduct;
+  }
+  if (source.item && typeof source.item === "object") {
+    return source.item as FavoriteProduct;
+  }
+  if (source.data && typeof source.data === "object") {
+    return unwrapProductDetail(source.data) ?? (source.data as FavoriteProduct);
+  }
+
+  return payload as FavoriteProduct;
+};
+
+const fetchProductUnits = async (
+  productId: number | string,
+): Promise<FavoriteProductUnit[]> => {
+  const paths = [
+    `/products/${productId}/units`,
+    `/product-units/product/${productId}`,
+  ];
+
+  for (const path of paths) {
+    const response = await authorizedFetch(path).catch(() => null);
+    if (!response?.ok) continue;
+
+    const units = unwrapNestedList<FavoriteProductUnit>(
+      await response.json().catch(() => ({})),
+    );
+    if (units.length > 0) {
+      return units;
+    }
+  }
+
+  return [];
+};
+
 const buildProductsPath = (
   page: number,
   limit: number,
@@ -208,6 +309,80 @@ const mergeUniqueProducts = (
 
 const getItemGroupId = (item: FavoriteItem) =>
   item.favorite_group_id ?? item.group_id ?? item.favorite_group?.id;
+
+const getFavoriteProductId = (item: FavoriteItem): number | string =>
+  item.productId ?? item.product_id ?? item.product?.id ?? "";
+
+const buildFavoriteProductForCart = (
+  item: FavoriteItem,
+  product: FavoriteProduct,
+): FavoriteProduct => {
+  const productId = getFavoriteProductId(item);
+  const nestedProductUnit = item.productUnit ?? item.product_unit;
+  const productUnitId =
+    item.productUnitId ??
+    item.product_unit_id ??
+    nestedProductUnit?.productUnitId ??
+    nestedProductUnit?.product_unit_id ??
+    nestedProductUnit?.id;
+  const favoriteUnit: FavoriteProductUnit | null =
+    productUnitId == null
+      ? null
+      : {
+          id: productUnitId,
+          productUnitId,
+          unitId: item.unitId ?? item.unit_id ?? nestedProductUnit?.unitId ?? nestedProductUnit?.unit_id,
+          unitCode: item.unitCode ?? item.unit_code ?? nestedProductUnit?.unitCode ?? nestedProductUnit?.unit_code,
+          unitNameTh:
+            item.unitNameTh ??
+            item.unit_name_th ??
+            nestedProductUnit?.unitNameTh ??
+            nestedProductUnit?.unit_name_th,
+          barcode: item.barcode ?? nestedProductUnit?.barcode ?? product.barcode,
+          conversionToBase:
+            item.conversionToBase ??
+            item.conversion_to_base ??
+            nestedProductUnit?.conversionToBase ??
+            nestedProductUnit?.conversion_to_base ??
+            1,
+          salePrice:
+            item.salePrice ??
+            item.sale_price ??
+            nestedProductUnit?.salePrice ??
+            nestedProductUnit?.sale_price ??
+            product.sale_price,
+          isBase: item.isBase ?? item.is_base ?? nestedProductUnit?.isBase ?? nestedProductUnit?.is_base ?? undefined,
+        };
+
+  return {
+    ...product,
+    id: productId,
+    productId,
+    product_id: productId,
+    productUnitId: productUnitId ?? product.productUnitId,
+    product_unit_id: productUnitId ?? product.product_unit_id,
+    product_name: item.productName ?? item.product_name ?? product.product_name,
+    productName: item.productName ?? item.product_name ?? product.productName,
+    barcode: item.barcode ?? product.barcode,
+    unitId: item.unitId ?? item.unit_id ?? product.unitId,
+    unit_id: item.unit_id ?? item.unitId ?? product.unit_id,
+    unitCode: item.unitCode ?? item.unit_code ?? product.unitCode,
+    unit_code: item.unit_code ?? item.unitCode ?? product.unit_code,
+    unitNameTh: item.unitNameTh ?? item.unit_name_th ?? product.unitNameTh,
+    unit_name_th: item.unit_name_th ?? item.unitNameTh ?? product.unit_name_th,
+    conversionToBase:
+      item.conversionToBase ?? item.conversion_to_base ?? product.conversionToBase,
+    conversion_to_base:
+      item.conversion_to_base ?? item.conversionToBase ?? product.conversion_to_base,
+    salePrice: item.salePrice ?? item.sale_price ?? product.salePrice,
+    sale_price: Number(item.salePrice ?? item.sale_price ?? product.sale_price) || product.sale_price,
+    isBase: item.isBase ?? item.is_base ?? product.isBase,
+    is_base: item.is_base ?? item.isBase ?? product.is_base,
+    productUnits: favoriteUnit
+      ? [favoriteUnit, ...(product.productUnits ?? product.product_units ?? product.units ?? [])]
+      : product.productUnits,
+  };
+};
 
 const getProductPriceLabel = (product: FavoriteProduct): string =>
   product.price_mode === "SERVICE_PRICE"
@@ -541,19 +716,16 @@ export default function FavoriteItems({
   const fetchProductDetail = async (
     productId: number | string,
   ): Promise<FavoriteProduct | null> => {
-    const response = await authorizedFetch(`/products/${productId}`);
-    if (!response.ok) return null;
-    const payload = (await response.json()) as
-      | FavoriteProduct
-      | { data?: FavoriteProduct };
-    if (
-      typeof payload === "object" &&
-      payload !== null &&
-      "data" in payload
-    ) {
-      return (payload as { data?: FavoriteProduct }).data ?? null;
-    }
-    return payload as FavoriteProduct;
+    const [detailResponse, unitsResponse] = await Promise.all([
+      authorizedFetch(`/products/${productId}`),
+      fetchProductUnits(productId),
+    ]);
+    if (!detailResponse.ok) return null;
+
+    const product = unwrapProductDetail(await detailResponse.json().catch(() => ({})));
+    if (!product) return null;
+
+    return { ...product, productUnits: unitsResponse };
   };
 
   const fetchItems = async () => {
@@ -582,7 +754,7 @@ export default function FavoriteItems({
         {},
       );
       const productIds = Array.from(
-        new Set(groupItems.map((item) => String(item.product_id))),
+        new Set(groupItems.map((item) => String(getFavoriteProductId(item)))),
       );
       const details = await Promise.all(
         productIds.map((productId) => fetchProductDetail(productId)),
@@ -878,8 +1050,10 @@ export default function FavoriteItems({
       ) : (
         <div className="grid auto-rows-min grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-4">
           {items.map((item) => {
-            const product = productsById[String(item.product_id)] ?? item.product;
+            const product =
+              productsById[String(getFavoriteProductId(item))] ?? item.product;
             if (!product) return null;
+            const cartProduct = buildFavoriteProductForCart(item, product);
             const imageSrc = resolvedImageUrls[String(product.id)];
             const hasImage =
               Boolean(imageSrc) && !failedImageIds.has(String(product.id));
@@ -891,7 +1065,7 @@ export default function FavoriteItems({
               >
                 <button
                   type="button"
-                  onClick={() => onAddToCart(product)}
+                  onClick={() => onAddToCart(cartProduct)}
                   className="w-full text-left"
                 >
                   <div className="mb-3 flex h-12 w-12 items-center justify-center overflow-hidden rounded-xl bg-[#4d9bf0]/10 text-[#1d6fd8]">

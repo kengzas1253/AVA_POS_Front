@@ -25,7 +25,105 @@ interface POSPaymentProps {
 }
 
 // ✅ Mixed Payment Method Types
-export type PaymentMethodType = "cash" | "transfer" | "gov_welfare" | "khon_la_krueng" | "digital_money" | "other";
+export type PaymentMethodType = string;
+
+type PaymentTabId = "cash" | "transfer" | "gov";
+
+interface PaymentTabOption {
+  id: PaymentTabId;
+  label: string;
+  icon: string;
+}
+
+interface PaymentType {
+  id: string;
+  paymentCode: string;
+  paymentName: string;
+  paymentNameEn?: string;
+  icon: string | null;
+  description: string | null;
+  isGovernmentScheme: boolean;
+  isActive: boolean;
+  sortOrder: number;
+}
+
+const paymentTabs: PaymentTabOption[] = [
+  {
+    id: "cash",
+    label: "เงินสด",
+    icon: "💵",
+  },
+  {
+    id: "transfer",
+    label: "โอน / พร้อมเพย์",
+    icon: "📱",
+  },
+  {
+    id: "gov",
+    label: "โครงการรัฐ",
+    icon: "🇹🇭",
+  },
+];
+
+const unwrapPaymentTypes = (payload: unknown): PaymentType[] => {
+  if (Array.isArray(payload)) return payload as PaymentType[];
+  if (!payload || typeof payload !== "object") return [];
+
+  const value = payload as {
+    data?: unknown;
+    paymentTypes?: unknown;
+    rows?: unknown;
+  };
+
+  if (Array.isArray(value.data)) return value.data as PaymentType[];
+  if (Array.isArray(value.paymentTypes)) return value.paymentTypes as PaymentType[];
+  if (Array.isArray(value.rows)) return value.rows as PaymentType[];
+  return [];
+};
+
+const getOrderedActivePaymentTypes = (items: PaymentType[]) =>
+  items
+    .filter((item) => item.isActive)
+    .sort((a, b) => (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER));
+
+const getPaymentTypeIcon = (paymentType: PaymentType): string => {
+  if (paymentType.icon === "CashBanknote" || paymentType.paymentCode === "CASH") return "💵";
+  if (
+    paymentType.icon === "DeviceMobile" ||
+    paymentType.paymentCode.includes("PROMPTPAY") ||
+    paymentType.paymentCode.includes("TRANSFER")
+  ) {
+    return "📱";
+  }
+  if (paymentType.icon === "BuildingBank" || paymentType.paymentCode.includes("WELFARE")) return "🏛️";
+  return paymentType.isGovernmentScheme ? "🇹🇭" : "💳";
+};
+
+const isTransferPaymentCode = (paymentCode: string): boolean =>
+  paymentCode.includes("TRANSFER") || paymentCode.includes("PROMPTPAY");
+
+const renderPaymentTabIcon = (tab: PaymentTabOption) => {
+  if (tab.id !== "gov") {
+    return <span>{tab.icon}</span>;
+  }
+
+  return (
+    <span
+      aria-label="ธงชาติไทย"
+      role="img"
+      style={{
+        display: "inline-flex",
+        width: 22,
+        height: 14,
+        overflow: "hidden",
+        borderRadius: 2,
+        boxShadow: "0 0 0 1px rgba(15, 23, 42, 0.18)",
+        background:
+          "linear-gradient(to bottom, #da291c 0 16.66%, #fff 16.66% 33.33%, #2d2a4a 33.33% 66.66%, #fff 66.66% 83.33%, #da291c 83.33% 100%)",
+      }}
+    />
+  );
+};
 
 interface MixedPaymentLine {
   id: string;
@@ -75,7 +173,7 @@ const getQuickCashAmounts = (total: number): number[] => {
     .slice(0, 7);
 };
 
-// ✅ สร้าง PromptPay QR code ด้วย promptpay-qr library (มาตรฐาน EMV)
+// ✅ à¸ªà¸£à¹‰à¸²à¸‡ PromptPay QR code à¸”à¹‰วย promptpay-qr library (à¸¡à¸²à¸•à¸£à¸าน EMV)
 const generatePromptPayQr = async (
   promptpayId?: string | null,
   amount?: number,
@@ -112,7 +210,7 @@ const generatePromptPayQr = async (
     const dataUrl = canvasRef.current?.toDataURL("image/png");
     return dataUrl || null;
   } catch (error) {
-    console.error("❌ Generate PromptPay QR error:", error);
+    console.error("âŒ Generate PromptPay QR error:", error);
     return null;
   }
 };
@@ -146,20 +244,22 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   total = 0,
 }) => {
   // ---------- state ----------
-  const [activeTab, setActiveTab] = useState<"cash" | "transfer" | "gov">("cash");
+  const [activeTab, setActiveTab] = useState<PaymentTabId>("cash");
   const [cashInput, setCashInput] = useState<string>(total.toFixed(2));
   const [popupChange, setPopupChange] = useState<number | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [storeData, setStoreData] = useState<StoreData | null>(null);
   const [storeError, setStoreError] = useState<string | null>(null);
+  const [paymentTypes, setPaymentTypes] = useState<PaymentType[]>([]);
+  const [paymentTypesError, setPaymentTypesError] = useState<string | null>(null);
   const [showSplitPopup, setShowSplitPopup] = useState(false);
   
   // ✅ Mixed payment state
   const [mixedPayments, setMixedPayments] = useState<MixedPaymentLine[]>([
-    { id: "1", type: "cash", amount: total.toFixed(2) }
+    { id: "1", type: "CASH", amount: total.toFixed(2) }
   ]);
 
-  // ✅ Ref สำหรับช่อง Input เงินสด
+  // ✅ Ref à¸ªà¸³à¸«à¸£à¸±à¸šà¸Šà¹ˆà¸­à¸‡ Input à¹€à¸‡ินสด
   const cashInputRef = useRef<HTMLInputElement>(null);
   
   // ✅ Ref สำหรับ popup container
@@ -177,6 +277,37 @@ const POSPayment: React.FC<POSPaymentProps> = ({
 
   const itemCount = cartItems.length;
   const totalQty = cartItems.reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
+  const activePaymentTypes = getOrderedActivePaymentTypes(paymentTypes);
+  const cashPaymentType = activePaymentTypes.find((item) => item.paymentCode === "CASH");
+  const transferPaymentType = activePaymentTypes.find(
+    (item) =>
+      !item.isGovernmentScheme &&
+      (item.paymentCode.includes("TRANSFER") || item.paymentCode.includes("PROMPTPAY")),
+  );
+  const governmentPaymentTypes = activePaymentTypes.filter((item) => item.isGovernmentScheme);
+  const defaultMixedPaymentType = cashPaymentType?.paymentCode || activePaymentTypes[0]?.paymentCode || "CASH";
+  const mixedPaymentOptions = activePaymentTypes;
+  const displayPaymentTabs = paymentTabs
+    .map((tab) => {
+      if (tab.id === "cash") {
+        return cashPaymentType ? { ...tab, label: cashPaymentType.paymentName, icon: getPaymentTypeIcon(cashPaymentType) } : tab;
+      }
+
+      if (tab.id === "transfer") {
+        return transferPaymentType
+          ? { ...tab, label: transferPaymentType.paymentName.trim(), icon: getPaymentTypeIcon(transferPaymentType) }
+          : tab;
+      }
+
+      return tab;
+    })
+    .filter((tab) => {
+      if (paymentTypes.length === 0) return true;
+      if (tab.id === "cash") return Boolean(cashPaymentType);
+      if (tab.id === "transfer") return Boolean(transferPaymentType);
+      if (tab.id === "gov") return governmentPaymentTypes.length > 0;
+      return true;
+    });
 
   const focusCashInput = useCallback((delay = 50) => {
     window.setTimeout(() => {
@@ -193,7 +324,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   }, []);
 
   // ---------- tab switch ----------
-  const switchTab = (tab: "cash" | "transfer" | "gov") => {
+  const switchTab = (tab: PaymentTabId) => {
     setActiveTab(tab);
     if (tab === "cash") {
       focusCashInput();
@@ -249,7 +380,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
     setCashInput(amount);
     focusCashInput();
     
-    // ✅ คำนวณและแสดง popup ทันทีเมื่อคลิกปุ่ม quick cash
+    // ✅ à¸„à¸³à¸™à¸§à¸“à¹à¸¥à¸°à¹à¸ªà¸”à¸‡ popup à¸—à¸±à¸™à¸—à¸µà¹€à¸¡à¸·à¹ˆà¸­à¸„à¸¥à¸´à¸à¸›ุ่ม quick cash
     const received = parseFloat(amount);
     if (!isNaN(received) && received >= total) {
       const change = received - total;
@@ -261,7 +392,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
 
   // ✅ Mixed payment functions
   const openSplitPopup = () => {
-    setMixedPayments([{ id: "1", type: "cash", amount: total.toFixed(2) }]);
+    setMixedPayments([{ id: "1", type: defaultMixedPaymentType, amount: total.toFixed(2) }]);
     setShowSplitPopup(true);
   };
 
@@ -273,7 +404,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   // ✅ Add new payment line
   const addPaymentLine = () => {
     const newId = (Math.max(...mixedPayments.map(p => parseInt(p.id) || 0)) + 1).toString();
-    setMixedPayments([...mixedPayments, { id: newId, type: "cash", amount: "0.00" }]);
+    setMixedPayments([...mixedPayments, { id: newId, type: defaultMixedPaymentType, amount: "0.00" }]);
   };
 
   // ✅ Remove payment line
@@ -329,7 +460,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   // ✅ Generate QR for split bill transfer amount
   useEffect(() => {
     const generateSplitQr = async () => {
-      const transferLine = mixedPayments.find(p => p.type === "transfer");
+      const transferLine = mixedPayments.find((p) => isTransferPaymentCode(p.type));
       const transferAmt = parseFloat(transferLine?.amount || "0");
       
       if (!storeData?.payment_account?.promptpay_id || transferAmt <= 0) {
@@ -346,7 +477,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
         );
         setSplitQrDataUrl(dataUrl);
       } catch (error) {
-        console.error("❌ Split QR generation failed:", error);
+        console.error("âŒ Split QR generation failed:", error);
         setSplitQrDataUrl(null);
       } finally {
         setSplitQrLoading(false);
@@ -372,7 +503,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
         );
         setTransferQrDataUrl(dataUrl);
       } catch (error) {
-        console.error("❌ Transfer QR generation failed:", error);
+        console.error("âŒ Transfer QR generation failed:", error);
         setTransferQrDataUrl(null);
       }
     };
@@ -382,7 +513,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
     }
   }, [activeTab, storeData?.payment_account?.promptpay_id, total]);
 
-  // ✅ Load store settings - ใช้ /store/settings เหมือนเดิม
+  // ✅ Load store settings - à¹ƒà¸Šà¹‰ /store/settings เหมือนเดิม
   useEffect(() => {
     let isMounted = true;
 
@@ -416,17 +547,76 @@ const POSPayment: React.FC<POSPaymentProps> = ({
     };
   }, []);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadPaymentTypes = async () => {
+      try {
+        const response = await authorizedFetch("/payment-types");
+        const payload = (await response.json().catch(() => ({}))) as unknown;
+
+        if (!response.ok) {
+          throw new Error(`Load payment types failed (${response.status})`);
+        }
+
+        if (isMounted) {
+          setPaymentTypes(unwrapPaymentTypes(payload));
+          setPaymentTypesError(null);
+        }
+      } catch (error) {
+        if (isMounted) {
+          setPaymentTypesError(error instanceof Error ? error.message : "Load payment types failed");
+        }
+      }
+    };
+
+    void loadPaymentTypes();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (displayPaymentTabs.length === 0 || displayPaymentTabs.some((tab) => tab.id === activeTab)) {
+      return;
+    }
+
+    switchTab(displayPaymentTabs[0].id);
+  }, [activeTab, displayPaymentTabs]);
+
+  useEffect(() => {
+    if (mixedPaymentOptions.length === 0) {
+      return;
+    }
+
+    const activeCodes = new Set(mixedPaymentOptions.map((item) => item.paymentCode));
+    setMixedPayments((current) => {
+      let hasInvalidPaymentType = false;
+      const nextPayments = current.map((payment) => {
+        if (activeCodes.has(payment.type)) {
+          return payment;
+        }
+
+        hasInvalidPaymentType = true;
+        return { ...payment, type: defaultMixedPaymentType };
+      });
+
+      return hasInvalidPaymentType ? nextPayments : current;
+    });
+  }, [defaultMixedPaymentType, mixedPaymentOptions]);
+
   // ✅ Update cash input when total changes
   useEffect(() => {
     setCashInput(total.toFixed(2));
   }, [total]);
 
-  // ✅ โฟกัสที่ Input เงินสดอัตโนมัติเมื่อ component ถูก mount
+  // ✅ à¹‚à¸Ÿà¸à¸±à¸ªà¸—ี่ Input à¹€à¸‡à¸´à¸™à¸ªà¸”à¸­à¸±à¸•à¹‚à¸™à¸¡à¸±à¸•ิเมื่อ component à¸–à¸¹à¸ mount
   useEffect(() => {
     focusCashInput(150);
   }, [focusCashInput]);
 
-  // ✅ เมื่อ popup เปิด ให้โฟกัสที่ container เพื่อรับ event keyboard
+  // ✅ เมื่อ popup à¹€à¸›ิด à¹ƒà¸«à¹‰à¹‚à¸Ÿà¸à¸±à¸ªà¸—ี่ container เพื่อรับ event keyboard
   useEffect(() => {
     if (popupChange !== null) {
       setTimeout(() => {
@@ -506,7 +696,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
               fontSize: 16,
             }}
           >
-            ＋
+            +
           </div>
         </div>
 
@@ -687,42 +877,47 @@ const POSPayment: React.FC<POSPaymentProps> = ({
               marginBottom: 28,
             }}
           >
-            {[
-              { id: "cash", label: "เงินสด", icon: "💵" },
-              { id: "transfer", label: "โอน / พร้อมเพย์", icon: "📱" },
-              { id: "gov", label: "โครงการรัฐ", icon: "🏛️" },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => switchTab(tab.id as any)}
-                style={{
-                  flex: 1,
-                  background: activeTab === tab.id ? "var(--white, #fff)" : "transparent",
-                  color: activeTab === tab.id ? "var(--blue-700, #13315c)" : "var(--gray-500, #6b7785)",
-                  border: "none",
-                  borderRadius: 10,
-                  padding: "12px 18px",
-                  fontSize: 16,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  transition: "all 0.15s ease",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 6,
-                }}
-              >
-                <span>{tab.icon}</span>
-                <span>{tab.label}</span>
+            {displayPaymentTabs.map((tab) => {
+              const isActive = activeTab === tab.id;
+
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => switchTab(tab.id)}
+                  style={{
+                    flex: 1,
+                    background: isActive ? "var(--white, #fff)" : "transparent",
+                    color: isActive ? "var(--blue-700, #13315c)" : "var(--gray-500, #6b7785)",
+                    border: "none",
+                    borderRadius: 10,
+                    padding: "12px 18px",
+                    fontSize: 16,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    transition: "all 0.15s ease",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                  }}
+                >
+                  {renderPaymentTabIcon(tab)}
+                  <span>{tab.label}</span>
               </button>
-            ))}
+              );
+            })}
           </div>
+          {paymentTypesError ? (
+            <div style={{ marginBottom: 16, color: "#b45309", fontSize: 12, textAlign: "center" }}>
+              โหลดประเภทการชำระเงินไม่สำเร็จ แสดงค่าเริ่มต้นชั่วคราว
+            </div>
+          ) : null}
 
           {/* ---------- CASH TAB ---------- */}
           {activeTab === "cash" && (
             <div>
               <div style={{ fontSize: 13, fontWeight: 600, color: "var(--blue-600, #1b4b8f)", marginBottom: 14 }}>
-                💵 รับเงินสด
+                รับเงินสด
               </div>
               <div style={{ marginBottom: 18 }}>
                 <div
@@ -809,7 +1004,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
           {activeTab === "transfer" && (
             <div>
               <div style={{ fontSize: 16, fontWeight: 600, color: "var(--blue-600, #1b4b8f)", marginBottom: 14 }}>
-                📱 โอนเงิน / PromptPay
+                {transferPaymentType?.paymentName.trim() || "โอนเงิน / PromptPay"}
               </div>
 
               {transferQrDataUrl ? (
@@ -919,13 +1114,9 @@ const POSPayment: React.FC<POSPaymentProps> = ({
                 เลือกโครงการของรัฐ
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {[
-                  { icon: "🪪", name: "บัตรสวัสดิการแห่งรัฐ", desc: "ชำระผ่านบัตรประจำตัวประชาชน" },
-                  { icon: "🛍️", name: "คนละครึ่ง", desc: "สแกนแอปเป๋าตัง เพื่อชำระเงิน" },
-                  { icon: "💳", name: "เงินดิจิทัล", desc: "ตรวจสอบสิทธิ์และยืนยันการใช้งาน" },
-                ].map((item, idx) => (
+                {governmentPaymentTypes.map((item) => (
                   <div
-                    key={idx}
+                    key={item.id}
                     style={{
                       display: "flex",
                       alignItems: "center",
@@ -952,13 +1143,15 @@ const POSPayment: React.FC<POSPaymentProps> = ({
                         flexShrink: 0,
                       }}
                     >
-                      {item.icon}
+                      {getPaymentTypeIcon(item)}
                     </div>
                     <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 14, fontWeight: 700 }}>{item.name}</div>
-                      <div style={{ fontSize: 12, color: "var(--gray-500, #6b7785)", marginTop: 2 }}>{item.desc}</div>
+                      <div style={{ fontSize: 14, fontWeight: 700 }}>{item.paymentName}</div>
+                      <div style={{ fontSize: 12, color: "var(--gray-500, #6b7785)", marginTop: 2 }}>
+                        {item.description || item.paymentNameEn || "ชำระผ่านโครงการรัฐ"}
+                      </div>
                     </div>
-                    <div style={{ color: "var(--gray-300, #d7dee8)", fontSize: 18 }}>›</div>
+                    <div style={{ color: "var(--gray-300, #d7dee8)", fontSize: 18 }}>{">"}</div>
                   </div>
                 ))}
               </div>
@@ -1076,12 +1269,11 @@ const POSPayment: React.FC<POSPaymentProps> = ({
                         cursor: "pointer",
                       }}
                     >
-                      <option value="cash">{getPaymentMethodLabel("cash")}</option>
-                      <option value="transfer">{getPaymentMethodLabel("transfer")}</option>
-                      <option value="gov_welfare">{getPaymentMethodLabel("gov_welfare")}</option>
-                      <option value="khon_la_krueng">{getPaymentMethodLabel("khon_la_krueng")}</option>
-                      <option value="digital_money">{getPaymentMethodLabel("digital_money")}</option>
-                      <option value="other">{getPaymentMethodLabel("other")}</option>
+                      {mixedPaymentOptions.map((paymentType) => (
+                        <option key={paymentType.id} value={paymentType.paymentCode}>
+                          {getPaymentTypeIcon(paymentType)} {paymentType.paymentName.trim()}
+                        </option>
+                      ))}
                     </select>
 
                     {mixedPayments.length > 1 && (
@@ -1133,7 +1325,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
                   </div>
 
                   {/* ✅ Show QR Code for transfer method */}
-                  {payment.type === "transfer" && parseFloat(payment.amount) > 0 && (
+                  {isTransferPaymentCode(payment.type) && parseFloat(payment.amount) > 0 && (
                     <div
                       style={{
                         display: "flex",
@@ -1210,7 +1402,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
                 (e.target as HTMLButtonElement).style.background = "var(--gray-100, #f3f4f6)";
               }}
             >
-              ➕ เพิ่มวิธีชำระเงิน
+              ＋ เพิ่มวิธีชำระเงิน
             </button>
 
             {/* Summary */}

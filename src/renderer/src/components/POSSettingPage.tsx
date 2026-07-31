@@ -23,6 +23,13 @@ import {
   updatePosMachineSettings,
   type PosMachineSettings,
 } from "./posMachineSettingService";
+import {
+  getStoredPosLayoutMode,
+  notifyPosLayoutModeChanged,
+  setStoredPosLayoutMode,
+  type PosLayoutMode,
+} from "./posLayoutMode";
+import POSScanSoundSetting from "./POSScanSoundSetting";
 
 type TabId = "current" | "all";
 
@@ -35,6 +42,7 @@ interface StoredPosDevice {
 }
 
 const POS_DEVICE_KEY = "pos_device";
+const POS_LAYOUT_ERROR_MESSAGE = "ไม่สามารถบันทึกรูปแบบหน้าขายได้";
 const missingMachineMessage =
   "ไม่พบข้อมูลเครื่อง POS กรุณาลงทะเบียนเครื่องก่อนใช้งาน";
 
@@ -76,11 +84,9 @@ const syncDeviceNameToStore = async (deviceName: string) => {
 const syncMachineSettingsToStore = async ({
   allowBelowCost,
   minProfitAmount,
-  autoConvertUnitPrice,
 }: {
   allowBelowCost: boolean;
   minProfitAmount: number;
-  autoConvertUnitPrice: boolean;
 }) => {
   const stored = await window.electronStore.get(POS_DEVICE_KEY);
   if (!stored || typeof stored !== "object") return;
@@ -88,7 +94,6 @@ const syncMachineSettingsToStore = async ({
   const settingsPayload = {
     allow_below_cost: allowBelowCost,
     min_profit_amount: minProfitAmount,
-    autoConvertUnitPrice,
   };
   const root = stored as StoredPosDevice;
 
@@ -137,7 +142,7 @@ export default function POSSettingPage() {
   const [deviceName, setDeviceName] = useState("");
   const [allowBelowCost, setAllowBelowCost] = useState(false);
   const [minProfitAmount, setMinProfitAmount] = useState("0.00");
-  const [autoConvertUnitPrice, setAutoConvertUnitPrice] = useState(false);
+  const [posLayoutMode, setPosLayoutMode] = useState<PosLayoutMode>("STANDARD");
   const [allDevices, setAllDevices] = useState<PosDevice[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
   const [allLoading, setAllLoading] = useState(false);
@@ -148,6 +153,7 @@ export default function POSSettingPage() {
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [savingDevice, setSavingDevice] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [savingPosLayoutMode, setSavingPosLayoutMode] = useState(false);
   const hasLoadedAllDevicesRef = useRef(false);
   const initialLoadStartedRef = useRef(false);
 
@@ -184,17 +190,22 @@ export default function POSSettingPage() {
       }
 
       setMachineId(storedMachineId);
-      const [device, machineSettings] = await Promise.all([
+      const [device, machineSettings, storedPosLayoutMode] = await Promise.all([
         getCurrentPosDevice(storedMachineId),
         getPosMachineSettings(storedMachineId),
+        getStoredPosLayoutMode(),
       ]);
 
       setCurrentDevice(device);
       setSettings(machineSettings);
       setDeviceName(getDeviceName(device));
-      setAllowBelowCost(Boolean(machineSettings?.allowBelowCost ?? machineSettings?.allow_below_cost));
-      setMinProfitAmount(String(machineSettings?.minProfitAmount ?? machineSettings?.min_profit_amount ?? "0.00"));
-      setAutoConvertUnitPrice(Boolean(machineSettings?.autoConvertUnitPrice ?? machineSettings?.auto_convert_unit_price));
+      setAllowBelowCost(
+        Boolean(machineSettings?.allowBelowCost ?? machineSettings?.allow_below_cost),
+      );
+      setMinProfitAmount(
+        String(machineSettings?.minProfitAmount ?? machineSettings?.min_profit_amount ?? "0.00"),
+      );
+      setPosLayoutMode(storedPosLayoutMode);
     } catch (error) {
       console.error("Error loading POS setting:", error);
       setCurrentError(
@@ -282,7 +293,6 @@ export default function POSSettingPage() {
         machine_id: machineId,
         allowBelowCost,
         minProfitAmount: Number(minProfitAmount),
-        autoConvertUnitPrice,
       };
       const existingSettings = settings ?? (await getPosMachineSettings(machineId));
       const savedSettings = await updatePosMachineSettings(
@@ -290,24 +300,19 @@ export default function POSSettingPage() {
         Boolean(existingSettings),
       );
       setSettings(savedSettings);
-      const savedAllowBelowCost = Boolean(savedSettings.allowBelowCost ?? savedSettings.allow_below_cost);
+      const savedAllowBelowCost = Boolean(
+        savedSettings.allowBelowCost ?? savedSettings.allow_below_cost,
+      );
       const savedMinProfitAmount = Number(
         savedSettings.minProfitAmount ??
           savedSettings.min_profit_amount ??
           payload.minProfitAmount,
       );
-      const savedAutoConvertUnitPrice = Boolean(
-        savedSettings.autoConvertUnitPrice ??
-          savedSettings.auto_convert_unit_price ??
-          payload.autoConvertUnitPrice,
-      );
       setAllowBelowCost(savedAllowBelowCost);
       setMinProfitAmount(String(savedMinProfitAmount));
-      setAutoConvertUnitPrice(savedAutoConvertUnitPrice);
       await syncMachineSettingsToStore({
         allowBelowCost: savedAllowBelowCost,
         minProfitAmount: savedMinProfitAmount,
-        autoConvertUnitPrice: savedAutoConvertUnitPrice,
       });
       setSuccessMessage("บันทึกการตั้งค่าเรียบร้อยแล้ว");
     } catch (error) {
@@ -317,6 +322,28 @@ export default function POSSettingPage() {
       );
     } finally {
       setSavingSettings(false);
+    }
+  };
+
+  const savePosLayoutMode = async (nextMode: PosLayoutMode) => {
+    if (savingPosLayoutMode || nextMode === posLayoutMode) return;
+
+    const previousMode = posLayoutMode;
+    setPosLayoutMode(nextMode);
+    setSavingPosLayoutMode(true);
+    setSettingsError(null);
+    setSuccessMessage(null);
+
+    try {
+      await setStoredPosLayoutMode(nextMode);
+      notifyPosLayoutModeChanged(nextMode);
+      setSuccessMessage("บันทึกรูปแบบหน้าขายเรียบร้อยแล้ว");
+    } catch (error) {
+      console.error("Error saving POS layout mode:", error);
+      setPosLayoutMode(previousMode);
+      setSettingsError(POS_LAYOUT_ERROR_MESSAGE);
+    } finally {
+      setSavingPosLayoutMode(false);
     }
   };
 
@@ -415,6 +442,64 @@ export default function POSSettingPage() {
 
               <section className="rounded-xl border border-slate-200 p-4">
                 <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-slate-700">
+                  <IconSettings size={18} className="text-[#1d6fd8]" />
+                  รูปแบบหน้าขาย
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {[
+                    {
+                      value: "STANDARD" as const,
+                      label: "หน้าขายมาตรฐาน",
+                      description:
+                        "แสดงรายการสินค้า สินค้าโปรด ตะกร้าสินค้า และปุ่มชำระเงิน",
+                    },
+                    {
+                      value: "SCAN_ONLY" as const,
+                      label: "หน้าสแกนสินค้า",
+                      description:
+                        "เน้นสแกนบาร์โค้ดและแสดงรายการสินค้าในรูปแบบตาราง",
+                    },
+                  ].map((option) => {
+                    const isSelected = posLayoutMode === option.value;
+                    return (
+                      <label
+                        key={option.value}
+                        className={`flex cursor-pointer gap-3 rounded-xl border p-4 transition ${
+                          isSelected
+                            ? "border-[#1d6fd8] bg-blue-50 ring-2 ring-[#1d6fd8]/15"
+                            : "border-slate-200 bg-white hover:border-slate-300"
+                        } ${savingPosLayoutMode ? "opacity-70" : ""}`}
+                      >
+                        <input
+                          type="radio"
+                          name="posLayoutMode"
+                          value={option.value}
+                          checked={isSelected}
+                          disabled={savingPosLayoutMode}
+                          onChange={() => void savePosLayoutMode(option.value)}
+                          className="mt-1 h-4 w-4 border-slate-300 text-[#1d6fd8] focus:ring-[#1d6fd8]"
+                        />
+                        <span>
+                          <span className="block text-sm font-semibold text-slate-700">
+                            {option.label}
+                          </span>
+                          <span className="mt-1 block text-xs leading-5 text-slate-500">
+                            {option.description}
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                {settingsError === POS_LAYOUT_ERROR_MESSAGE ? (
+                  <p className="mt-3 text-xs text-red-500">{settingsError}</p>
+                ) : null}
+              </section>
+
+              <POSScanSoundSetting />
+
+              <section className="rounded-xl border border-slate-200 p-4">
+                <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-slate-700">
                   <IconShieldCheck size={18} className="text-[#1d6fd8]" />
                   การแจ้งเตือนกำไรขั้นต่ำ
                 </div>
@@ -458,41 +543,6 @@ export default function POSSettingPage() {
                     <p className="mt-1 text-xs text-red-500">{settingsError}</p>
                   ) : null}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void saveSettings()}
-                  disabled={savingSettings}
-                  className="mt-4 flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-                >
-                  <IconDeviceFloppy size={18} />
-                  {savingSettings ? "กำลังบันทึก..." : "บันทึกการตั้งค่า"}
-                </button>
-              </section>
-
-              <section className="rounded-xl border border-slate-200 p-4">
-                <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-slate-700">
-                  <IconSettings size={18} className="text-[#1d6fd8]" />
-                  คิดราคาแพ็คและลังอัตโนมัติ
-                </div>
-                <label className="flex items-start gap-3">
-                  <input
-                    type="checkbox"
-                    checked={autoConvertUnitPrice}
-                    onChange={(event) => setAutoConvertUnitPrice(event.target.checked)}
-                    className="mt-1 h-4 w-4 rounded border-slate-300 text-[#1d6fd8] focus:ring-[#1d6fd8]"
-                  />
-                  <span>
-                    <span className="block text-sm font-medium text-slate-700">
-                      คิดราคาแพ็คและลังอัตโนมัติ
-                    </span>
-                    <span className="mt-1 block text-xs text-slate-400">
-                      เมื่อสแกนสินค้าหน่วยย่อยครบตามจำนวน ระบบจะเปลี่ยนไปใช้ราคาแพ็คหรือลังที่ถูกกว่าโดยอัตโนมัติ
-                    </span>
-                  </span>
-                </label>
-                <p className="mt-3 rounded-xl bg-blue-50 px-3 py-2 text-xs text-blue-700">
-                  หาก 1 แพ็คมี 6 กล่อง เมื่อสแกนครบ 6 ครั้ง ระบบจะใช้ราคาแพ็คโดยอัตโนมัติ
-                </p>
                 <button
                   type="button"
                   onClick={() => void saveSettings()}

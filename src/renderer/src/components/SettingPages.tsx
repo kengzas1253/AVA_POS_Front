@@ -26,11 +26,41 @@ interface StoredPosDevice {
   [key: string]: unknown;
 }
 
+interface StoreSettingsResponse {
+  data?: StoreData | StoreSettings;
+  store?: StoreSettings;
+  payment_account?: PaymentAccount;
+  message?: string;
+}
+
+const isStoreSettings = (value: unknown): value is StoreSettings =>
+  Boolean(
+    value &&
+      typeof value === "object" &&
+      ("store_name" in value || "auto_pack_pricing_scope" in value),
+  );
+
+const unwrapStoreSettings = (
+  result: StoreSettingsResponse,
+): {
+  store?: StoreSettings;
+  paymentAccount?: PaymentAccount;
+} => {
+  const store =
+    (isStoreSettings(result.data) ? result.data : result.data?.store) ??
+    result.store;
+  const paymentAccount =
+    (!isStoreSettings(result.data) ? result.data?.payment_account : undefined) ??
+    result.payment_account;
+
+  return { store, paymentAccount };
+};
+
 const getDefaultExpandedSections = (page: string) => {
   if (page === "tax") return new Set(["tax"]);
   if (page === "payment") return new Set(["payment"]);
   if (page === "receipt") return new Set(["receipt"]);
-  return new Set(["general", "address", "system"]);
+  return new Set(["general", "address", "system", "pack-pricing"]);
 };
 
 const getPageHeader = (page: string) => {
@@ -86,8 +116,44 @@ export default function SettingPages({ page }: SettingPagesProps) {
         throw new Error(`โหลดข้อมูลร้านไม่สำเร็จ (${response.status})`);
       }
 
-      const result = await response.json();
-      const data: StoreData = result.data;
+      const result = (await response.json()) as StoreSettingsResponse;
+      const { store: baseStore, paymentAccount } = unwrapStoreSettings(result);
+      let store = baseStore;
+
+      try {
+        const settingsResponse = await authorizedFetch("/store-settings");
+        if (settingsResponse.ok) {
+          const settingsResult =
+            (await settingsResponse.json()) as StoreSettingsResponse;
+          const { store: storeSettings } = unwrapStoreSettings(settingsResult);
+          if (storeSettings?.auto_pack_pricing_scope) {
+            store = {
+              ...store,
+              auto_pack_pricing_scope: storeSettings.auto_pack_pricing_scope,
+            } as StoreSettings;
+          }
+        }
+      } catch (settingsError) {
+        console.warn("Error fetching auto pack pricing scope:", settingsError);
+      }
+      if (!store) {
+        throw new Error("ไม่พบข้อมูลร้านค้า");
+      }
+      const data: StoreData = {
+        store,
+        payment_account:
+          paymentAccount ??
+          ({
+            id: 0,
+            account_name: "",
+            bank_name: "",
+            account_no: "",
+            account_holder: "",
+            promptpay_type: "",
+            promptpay_id: "",
+            is_default: false,
+          } satisfies PaymentAccount),
+      };
       setStoreData(data);
       setFormStore(data.store);
       setFormPayment(data.payment_account);
@@ -208,6 +274,8 @@ export default function SettingPages({ page }: SettingPagesProps) {
       timezone: formStore.timezone,
       allow_negative_stock: formStore.allow_negative_stock,
       default_customer_name: formStore.default_customer_name,
+      auto_pack_pricing_scope:
+        formStore.auto_pack_pricing_scope ?? "DISABLED",
       ...overrides,
     };
 

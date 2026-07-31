@@ -13,7 +13,6 @@ import {
   IconMenu2,
   IconMinus,
   IconPencil,
-  IconPhone,
   IconPlus,
   IconPower,
   IconQrcode,
@@ -22,7 +21,6 @@ import {
   IconShoppingCart,
   IconStar,
   IconTrash,
-  IconUser,
   IconUserPlus,
   IconX,
 } from "@tabler/icons-react";
@@ -33,13 +31,21 @@ import Categories from "./Categories";
 import Customer from "./Customer";
 import ProductLandingpage from "./ProductLandingpage";
 import PromotionPage from "./PromotionPage";
+import StockPage from "./StockPage";
 import PrintBarcode from "./PrintBarcode";
 import POSPayment from "./POSPayment";
 import DiscountPopup from "./DiscountPopup";
+import HeldBillsPopup from "./HeldBillsPopup";
 import QuotationPage from "./QuotationPage";
+import ReceiptPage from "./ReceiptPage";
 import PrinterSetting from "./PrinterSetting";
 import POSSettingPage from "./POSSettingPage";
 import SettingPages from "./SettingPages";
+import CustomerPickerPopup, {
+  getCustomerName,
+  getCustomerPhone,
+  type PosCustomer,
+} from "./CustomerPickerPopup";
 import { RegisterPage } from "./RegisterPage";
 import { checkDiscount } from "./posDiscountService";
 import FavoriteGroups, {
@@ -55,6 +61,7 @@ import {
 import { UserInfoPage } from "./UserInfoPage";
 import { ensureValidAccessToken, refreshAccessToken } from "./auth";
 import { normalizeBarcode } from "./BarcodeNormalizer";
+import { usePosScanSound } from "./usePosScanSound";
 
 interface CartItem {
   id?: number | string;
@@ -182,30 +189,20 @@ interface StoreSettings {
   store_name?: string;
   vat_enabled?: boolean;
   vat_rate?: number;
+  auto_pack_pricing_scope?: AutoPackPricingScope;
 }
 
 interface StoreSettingsResponse {
   status?: string;
   message?: string;
-  data?: {
-    store?: StoreSettings;
-  };
+  data?: StoreSettings | { store?: StoreSettings };
+  store?: StoreSettings;
 }
 
-interface PosCustomer {
-  id: number | string;
-  customer_code?: string;
-  customer_name?: string;
-  name?: string;
-  full_name?: string;
-  phone?: string | null;
-  phone_number?: string | null;
-  mobile?: string | null;
-  email?: string | null;
-  address?: string | null;
-  points_balance?: number;
-  total_purchase_amount?: number;
-}
+type AutoPackPricingScope =
+  | "DISABLED"
+  | "ALL_CUSTOMERS"
+  | "MEMBERS_ONLY";
 
 interface CustomersResponse {
   data?: PosCustomer[] | { customers?: PosCustomer[]; data?: PosCustomer[] };
@@ -459,20 +456,19 @@ const getStoredAllowBelowCost = (storedDevice: unknown): boolean => {
   return value === true || value === "true";
 };
 
-const getStoredAutoConvertUnitPrice = (storedDevice: unknown): boolean => {
-  if (!storedDevice || typeof storedDevice !== "object") {
-    return false;
-  }
+const normalizeAutoPackPricingScope = (
+  value: unknown,
+): AutoPackPricingScope =>
+  value === "ALL_CUSTOMERS" || value === "MEMBERS_ONLY" || value === "DISABLED"
+    ? value
+    : "DISABLED";
 
-  const device = storedDevice as {
-    autoConvertUnitPrice?: unknown;
-    pos_device?: { autoConvertUnitPrice?: unknown };
-  };
-  const value =
-    device.autoConvertUnitPrice ?? device.pos_device?.autoConvertUnitPrice;
-
-  return value === true || value === "true";
-};
+const isStoreSettings = (value: unknown): value is StoreSettings =>
+  Boolean(
+    value &&
+      typeof value === "object" &&
+      ("store_name" in value || "auto_pack_pricing_scope" in value),
+  );
 
 const getDiscountErrorMessage = (message?: string): string => {
   if (message === "This discount exceeds the allowed limit.") {
@@ -538,6 +534,18 @@ const getScannedProductPrice = (product: ScannedProduct): number =>
 
 const getScannedProductUnitCode = (product: ScannedProduct): string | undefined =>
   product.unitCode ?? product.unit_code ?? product.unit;
+
+const hasScannedProductUnit = (product: ScannedProduct | null): product is ScannedProduct =>
+  Boolean(product && getScannedProductUnitId(product) != null);
+
+const getCalculableProductUnitId = (
+  item: CartItem,
+): number | null => {
+  const productUnitId = Number(item.productUnitId);
+  return Number.isFinite(productUnitId) && productUnitId > 0
+    ? productUnitId
+    : null;
+};
 
 const mapScannedProductToCartItem = (
   product: ScannedProduct,
@@ -722,7 +730,7 @@ const loadStoreSettings = async (): Promise<StoreSettings> => {
 
   const baseUrl = apiPath.trim().replace(/\/+$/, "");
   const request = (token: string) =>
-    fetch(`${baseUrl}/store/settings`, {
+    fetch(`${baseUrl}/store-settings`, {
       headers: {
         Authorization: `Bearer ${token}`,
       },
@@ -739,7 +747,7 @@ const loadStoreSettings = async (): Promise<StoreSettings> => {
     throw new Error(data.message || `โหลดการตั้งค่าร้านไม่สำเร็จ (${response.status})`);
   }
 
-  return data.data?.store ?? {};
+  return (isStoreSettings(data.data) ? data.data : data.data?.store) ?? data.store ?? {};
 };
 
 const loadCustomers = async (): Promise<PosCustomer[]> => {
@@ -831,12 +839,6 @@ const unwrapSearchedProducts = (
 
   return [];
 };
-
-const getCustomerName = (customer: PosCustomer): string =>
-  customer.customer_name ?? customer.name ?? customer.full_name ?? "-";
-
-const getCustomerPhone = (customer: PosCustomer): string =>
-  customer.phone ?? customer.phone_number ?? customer.mobile ?? "-";
 
 const toPositiveInteger = (value: unknown): number | null => {
   if (typeof value === "number") {
@@ -1049,14 +1051,14 @@ const calculateCartUnitPrices = async (
 
   items.forEach((item) => {
     const productId = Number(item.product_id ?? item.id);
-    const productUnitId = Number(item.productUnitId);
+    const productUnitId = getCalculableProductUnitId(item);
 
     if (!Number.isFinite(productId) || productId <= 0) {
       throw new Error(
         `ไม่พบ productId ของสินค้า ${item.product_name ?? item.name}`,
       );
     }
-    if (!Number.isFinite(productUnitId) || productUnitId <= 0) {
+    if (productUnitId == null) {
       throw new Error(
         `ไม่พบ productUnitId ของสินค้า ${item.product_name ?? item.name}`,
       );
@@ -1175,6 +1177,35 @@ const getFavoriteProductUnits = (
 ): FavoriteProductUnit[] =>
   product.productUnits ?? product.product_units ?? product.units ?? [];
 
+const unwrapFavoriteProductUnitsResponse = (
+  payload: unknown,
+): FavoriteProductUnit[] => {
+  if (Array.isArray(payload)) {
+    return payload as FavoriteProductUnit[];
+  }
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+
+  const source = payload as {
+    data?: unknown;
+    items?: unknown;
+    units?: unknown;
+    productUnits?: unknown;
+    product_units?: unknown;
+  };
+  if (Array.isArray(source.items)) return source.items as FavoriteProductUnit[];
+  if (Array.isArray(source.units)) return source.units as FavoriteProductUnit[];
+  if (Array.isArray(source.productUnits)) return source.productUnits as FavoriteProductUnit[];
+  if (Array.isArray(source.product_units)) return source.product_units as FavoriteProductUnit[];
+  if (Array.isArray(source.data)) return source.data as FavoriteProductUnit[];
+  if (source.data && typeof source.data === "object") {
+    return unwrapFavoriteProductUnitsResponse(source.data);
+  }
+
+  return [];
+};
+
 const getFavoriteUnitId = (
   unit: FavoriteProductUnit,
 ): number | string | null =>
@@ -1212,36 +1243,210 @@ const getFavoriteUnitSalePrice = (
   fallback: number,
 ): number => Number(unit.salePrice ?? unit.sale_price ?? fallback) || fallback;
 
+const isFavoriteUnitActive = (unit: FavoriteProductUnit): boolean => {
+  const status = String(unit.status ?? unit.isActive ?? unit.is_active ?? "ACTIVE").toUpperCase();
+  return status === "ACTIVE" || status === "TRUE";
+};
+
 const getDefaultProductUnit = (
   product: FavoriteProduct,
 ): FavoriteProductUnit | null => {
   const units = getFavoriteProductUnits(product);
+  const savedProductUnitId = product.productUnitId ?? product.product_unit_id;
 
   return (
+    units.find(
+      (unit) =>
+        savedProductUnitId != null &&
+        String(getFavoriteUnitId(unit)) === String(savedProductUnitId),
+    ) ??
     units.find((unit) => unit.isBase === true || unit.is_base === true) ??
+    units.find(isFavoriteUnitActive) ??
     units.find((unit) => getFavoriteUnitConversionToBase(unit) === 1) ??
     units[0] ??
     null
   );
 };
 
+const getFallbackProductUnit = (
+  product: FavoriteProduct,
+): FavoriteProductUnit | null => {
+  const productUnit =
+    product.productUnit && typeof product.productUnit === "object"
+      ? (product.productUnit as Record<string, unknown>)
+      : {};
+  const productUnitSnake =
+    product.product_unit && typeof product.product_unit === "object"
+      ? (product.product_unit as Record<string, unknown>)
+      : {};
+  const productUnitId =
+    product.productUnitId ??
+    product.product_unit_id ??
+    productUnit.productUnitId ??
+    productUnit.id ??
+    productUnitSnake.product_unit_id ??
+    productUnitSnake.id;
+  const unitId = product.unitId ?? product.unit_id;
+
+  if (productUnitId == null) {
+    return null;
+  }
+
+  return {
+    id: productUnitId as number | string,
+    productUnitId: productUnitId as number | string,
+    unitId: unitId as number | string | undefined,
+    unitCode: product.unitCode as string | undefined,
+    unit_code: product.unit_code,
+    unitNameTh: product.unitNameTh as string | undefined,
+    unit_name_th: product.unit_name_th as string | undefined,
+    barcode: product.barcode,
+    conversionToBase: product.conversionToBase as number | string | undefined,
+    conversion_to_base: product.conversion_to_base as number | string | undefined,
+    salePrice: product.salePrice as number | string | undefined,
+    sale_price: product.sale_price,
+    isBase: true,
+  };
+};
+
 const fetchFavoriteProductUnits = async (
   productId: number | string,
 ): Promise<FavoriteProductUnit[]> => {
-  const response = await heldBillFetch(`/products/${productId}/units`);
-  const payload = (await response.json().catch(() => ({}))) as
-    | FavoriteProductUnit[]
-    | { data?: FavoriteProductUnit[]; units?: FavoriteProductUnit[] };
+  const paths = [
+    `/products/${productId}/units`,
+    `/product-units/product/${productId}`,
+  ];
 
+  for (const path of paths) {
+    const response = await heldBillFetch(path).catch(() => null);
+    if (!response?.ok) continue;
+
+    const payload = (await response.json().catch(() => ({}))) as
+      | FavoriteProductUnit[]
+      | { data?: FavoriteProductUnit[]; units?: FavoriteProductUnit[] };
+    const units = unwrapFavoriteProductUnitsResponse(payload);
+    if (units.length > 0) {
+      return units;
+    }
+  }
+
+  return [];
+};
+
+const unwrapUnitListResponse = (
+  payload: unknown,
+): Array<Record<string, unknown>> => {
+  if (Array.isArray(payload)) return payload as Array<Record<string, unknown>>;
+  if (!payload || typeof payload !== "object") return [];
+
+  const source = payload as { data?: unknown; items?: unknown; units?: unknown };
+  if (Array.isArray(source.items)) return source.items as Array<Record<string, unknown>>;
+  if (Array.isArray(source.units)) return source.units as Array<Record<string, unknown>>;
+  if (Array.isArray(source.data)) return source.data as Array<Record<string, unknown>>;
+  if (source.data && typeof source.data === "object") {
+    return unwrapUnitListResponse(source.data);
+  }
+
+  return [];
+};
+
+const fetchUnitIdByCode = async (
+  unitCode?: string | null,
+): Promise<number | string | null> => {
+  const normalizedCode = unitCode?.trim();
+  if (!normalizedCode) return null;
+
+  const response = await heldBillFetch("/units").catch(() => null);
+  if (!response?.ok) return null;
+
+  const units = unwrapUnitListResponse(await response.json().catch(() => []));
+  const matchedUnit = units.find((unit) => {
+    const code = String(unit.unitCode ?? unit.unit_code ?? "").trim();
+    return code === normalizedCode;
+  });
+
+  const unitId = matchedUnit?.id ?? matchedUnit?.unitId ?? matchedUnit?.unit_id;
+  return typeof unitId === "number" || typeof unitId === "string" ? unitId : null;
+};
+
+const createLegacyBaseProductUnit = async (
+  product: FavoriteProduct,
+): Promise<FavoriteProductUnit | null> => {
+  const productId = product.productId ?? product.product_id ?? product.id;
+  const unitId =
+    product.unitId ?? product.unit_id ?? (await fetchUnitIdByCode(product.unit_code));
+
+  if (!productId || !unitId || !product.barcode) {
+    console.warn("[Favorite Add To Cart] cannot create legacy base unit", {
+      productId,
+      unitId,
+      unitCode: product.unit_code,
+      barcode: product.barcode,
+      product,
+    });
+    return null;
+  }
+
+  const response = await heldBillFetch(`/products/${productId}/units`, {
+    method: "POST",
+    body: JSON.stringify({
+      unitId,
+      barcode: product.barcode,
+      conversionToBase: 1,
+      salePrice: Number(product.sale_price) || 0,
+      costPrice: Number(product.cost_price) || 0,
+      isBase: true,
+      isActive: true,
+      sortOrder: 1,
+    }),
+  }).catch(() => null);
+
+  const refreshedUnits = await fetchFavoriteProductUnits(productId).catch(() => []);
+  const selectedUnit = getDefaultProductUnit({
+    ...product,
+    productUnits: refreshedUnits,
+  });
+  if (selectedUnit) return selectedUnit;
+
+  if (!response?.ok) {
+    console.warn("[Favorite Add To Cart] legacy base unit creation failed", {
+      productId,
+      unitId,
+      unitCode: product.unit_code,
+      responseStatus: response?.status,
+    });
+  }
+
+  return null;
+};
+
+const unwrapFavoriteProductDetailResponse = (
+  payload: unknown,
+): FavoriteProduct | null => {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const source = payload as { data?: unknown; product?: unknown; item?: unknown };
+  if (source.product && typeof source.product === "object") {
+    return source.product as FavoriteProduct;
+  }
+  if (source.item && typeof source.item === "object") {
+    return source.item as FavoriteProduct;
+  }
+  if (source.data && typeof source.data === "object") {
+    return unwrapFavoriteProductDetailResponse(source.data) ?? (source.data as FavoriteProduct);
+  }
+  return payload as FavoriteProduct;
+};
+
+const fetchFavoriteProductDetail = async (
+  productId: number | string,
+): Promise<FavoriteProduct | null> => {
+  const response = await heldBillFetch(`/products/${productId}`);
   if (!response.ok) {
-    return [];
+    return null;
   }
-
-  if (Array.isArray(payload)) {
-    return payload;
-  }
-
-  return payload.data ?? payload.units ?? [];
+  return unwrapFavoriteProductDetailResponse(await response.json().catch(() => ({})));
 };
 
 const mapFavoriteProductUnitToScannedProduct = (
@@ -1250,14 +1455,10 @@ const mapFavoriteProductUnitToScannedProduct = (
 ): ScannedProduct | null => {
   const productUnitId = getFavoriteUnitId(unit);
 
-  if (productUnitId == null) {
-    return null;
-  }
-
   return {
     id: product.id,
     productId: product.id,
-    productUnitId,
+    productUnitId: productUnitId ?? undefined,
     sku: product.sku,
     barcode: String(unit.barcode ?? product.barcode ?? "").trim(),
     name: product.product_name,
@@ -1647,6 +1848,7 @@ export default function PosLandingPages() {
     store_name: "AVA MY POS",
     vat_enabled: false,
     vat_rate: 0,
+    auto_pack_pricing_scope: "DISABLED",
   });
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [selectedCartItemName, setSelectedCartItemName] = useState<string | null>(null);
@@ -1715,11 +1917,13 @@ export default function PosLandingPages() {
   const clearConfirmSelectionRef = useRef<"cancel" | "confirm">("confirm");
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
   const cancelButtonRef = useRef<HTMLButtonElement>(null);
+  const { playFirstProductScan, playNoProductsFound } = usePosScanSound();
   const isProductPage = [
     "products",
     "productList",
     "categories",
     "printBarcode",
+    "productStocks",
     "priceQuotation",
     "promotion",
   ].includes(currentPage);
@@ -1836,7 +2040,12 @@ export default function PosLandingPages() {
     options: { selectedName?: string | null; focus?: boolean } = {},
   ): Promise<boolean> => {
     const storedDevice = await window.electronStore.get("pos_device");
-    const shouldAutoConvert = getStoredAutoConvertUnitPrice(storedDevice);
+    const autoPackPricingScope = normalizeAutoPackPricingScope(
+      storeSettings.auto_pack_pricing_scope,
+    );
+    const shouldAutoConvert =
+      autoPackPricingScope === "ALL_CUSTOMERS" ||
+      (autoPackPricingScope === "MEMBERS_ONLY" && Boolean(selectedCustomer));
     setAutoConvertUnitPrice(shouldAutoConvert);
 
     if (!shouldAutoConvert) {
@@ -1884,11 +2093,47 @@ export default function PosLandingPages() {
       sourceCartRef.current = nextSourceItems;
       setSourceCart(nextSourceItems);
       console.log("Source cart before calculate:", nextSourceItems);
-      const result = await calculateCartUnitPrices(machineId, nextSourceItems);
+      const calculableItems = nextSourceItems.filter(
+        (item) => getCalculableProductUnitId(item) != null,
+      );
+      const uncalculableItems = nextSourceItems.filter(
+        (item) => getCalculableProductUnitId(item) == null,
+      );
+
+      if (!calculableItems.length) {
+        const fallbackTotal = nextSourceItems.reduce(
+          (sum, item) =>
+            sum + (Number(item.total_amount ?? item.final_price ?? item.price * item.qty) || 0),
+          0,
+        );
+        cartRef.current = nextSourceItems;
+        setCart(nextSourceItems);
+        setPromotionSubtotal(fallbackTotal);
+        setDiscountTotal(0);
+        setGrandTotal(fallbackTotal);
+        setAppliedPromotions([]);
+        if (options.selectedName !== undefined) {
+          setSelectedCartItemName(options.selectedName);
+        }
+        if (options.focus !== false) {
+          focusBarcodeInput();
+        }
+        return true;
+      }
+
+      const result = await calculateCartUnitPrices(machineId, calculableItems);
       console.log("calculate-cart response", result);
       console.log("cart before update", cartRef.current);
-      const updatedItems = mapCalculateCartResponseToCart(result);
+      const updatedItems = [
+        ...mapCalculateCartResponseToCart(result),
+        ...uncalculableItems,
+      ];
       console.log("cart after update", updatedItems);
+      const uncalculableTotal = uncalculableItems.reduce(
+        (sum, item) =>
+          sum + (Number(item.total_amount ?? item.final_price ?? item.price * item.qty) || 0),
+        0,
+      );
       const fallbackSubtotal = updatedItems.reduce(
         (sum, item) =>
           sum + (Number(item.total_amount ?? item.final_price ?? item.price * item.qty) || 0),
@@ -1897,9 +2142,15 @@ export default function PosLandingPages() {
 
       cartRef.current = updatedItems;
       setCart(updatedItems);
-      setPromotionSubtotal(getCalculateCartSubtotal(result, fallbackSubtotal));
+      setPromotionSubtotal(
+        getCalculateCartSubtotal(result, fallbackSubtotal - uncalculableTotal) +
+          uncalculableTotal,
+      );
       setDiscountTotal(getCalculateCartDiscountTotal(result));
-      setGrandTotal(getCalculateCartGrandTotal(result, fallbackSubtotal));
+      setGrandTotal(
+        getCalculateCartGrandTotal(result, fallbackSubtotal - uncalculableTotal) +
+          uncalculableTotal,
+      );
       setAppliedPromotions([]);
       if (options.selectedName !== undefined) {
         const selectedExists =
@@ -2401,16 +2652,18 @@ export default function PosLandingPages() {
 
   const addFavoriteProduct = async (product: FavoriteProduct) => {
     console.log("Favorite product clicked:", product);
-    const priceMode = product.price_mode ?? "FIXED_PRICE";
-    let defaultUnit = getDefaultProductUnit(product);
+    let resolvedProduct = product;
+    const priceMode = resolvedProduct.price_mode ?? "FIXED_PRICE";
+    let defaultUnit =
+      getDefaultProductUnit(resolvedProduct) ?? getFallbackProductUnit(resolvedProduct);
     console.log("Resolved default unit:", defaultUnit);
     let cartProduct = defaultUnit
-      ? mapFavoriteProductUnitToScannedProduct(product, defaultUnit)
+      ? mapFavoriteProductUnitToScannedProduct(resolvedProduct, defaultUnit)
       : null;
 
-    if (!cartProduct && product.barcode) {
+    if (!cartProduct && resolvedProduct.barcode) {
       try {
-        const scanResult = await scanProduct(product.barcode);
+        const scanResult = await scanProduct(resolvedProduct.barcode);
         if (scanResult.success && scanResult.product) {
           cartProduct = scanResult.product;
         }
@@ -2420,18 +2673,41 @@ export default function PosLandingPages() {
     }
 
     if (!cartProduct) {
-      const units = await fetchFavoriteProductUnits(product.id);
-      defaultUnit = getDefaultProductUnit({ ...product, productUnits: units });
+      const detail = await fetchFavoriteProductDetail(resolvedProduct.id).catch(() => null);
+      if (detail) {
+        resolvedProduct = { ...resolvedProduct, ...detail };
+      }
+      const units = await fetchFavoriteProductUnits(resolvedProduct.id);
+      defaultUnit =
+        getDefaultProductUnit({ ...resolvedProduct, productUnits: units }) ??
+        getFallbackProductUnit(resolvedProduct);
+      if (!defaultUnit && units.length === 0) {
+        defaultUnit = await createLegacyBaseProductUnit(resolvedProduct);
+      }
       console.log("Resolved default unit from product units API:", defaultUnit);
       cartProduct = defaultUnit
-        ? mapFavoriteProductUnitToScannedProduct(product, defaultUnit)
+        ? mapFavoriteProductUnitToScannedProduct(resolvedProduct, defaultUnit)
         : null;
     }
 
-    if (!cartProduct || getScannedProductUnitId(cartProduct) == null) {
-      setScanMessage(`ไม่พบหน่วยขายของสินค้า ${product.product_name}`);
+    if (!cartProduct) {
+      console.warn("[Favorite Add To Cart] product unit not found", {
+        productId: resolvedProduct.id,
+        productName: resolvedProduct.product_name,
+        savedProductUnitId: resolvedProduct.productUnitId ?? resolvedProduct.product_unit_id,
+        units: getFavoriteProductUnits(resolvedProduct),
+        product: resolvedProduct,
+      });
+      setScanMessage(`ไม่พบหน่วยขายของสินค้า ${resolvedProduct.product_name}`);
       return;
     }
+
+    console.log("[Favorite Add To Cart]", {
+      favoriteProductId: product.id,
+      productId: getScannedProductId(cartProduct),
+      productUnitId: getScannedProductUnitId(cartProduct),
+      productName: getScannedProductName(cartProduct),
+    });
 
     if (priceMode === "OPEN_PRICE" || priceMode === "SERVICE_PRICE") {
       openPriceInput(cartProduct);
@@ -2870,11 +3146,13 @@ export default function PosLandingPages() {
       const result = await scanProduct(normalizedBarcode);
 
       if (result.code === "PRODUCT_NOT_FOUND") {
+        playNoProductsFound();
         setScanMessage(BARCODE_NOT_FOUND_MESSAGE);
         return;
       }
 
       if (!result.success || !result.product) {
+        playNoProductsFound();
         setScanMessage(BARCODE_NOT_FOUND_MESSAGE);
         return;
       }
@@ -2899,10 +3177,14 @@ export default function PosLandingPages() {
         return;
       }
 
+      const isFirstProductScan = cartRef.current.length === 0;
       await addScannedProductToCart(
         result.product,
         getScannedProductPrice(result.product),
       );
+      if (isFirstProductScan) {
+        playFirstProductScan();
+      }
     } catch (error) {
       console.error("Scan API error:", error);
       setScanMessage(
@@ -3160,17 +3442,22 @@ export default function PosLandingPages() {
 
     const fetchStoreSettings = async () => {
       try {
-        const [settings, storedDevice] = await Promise.all([
-          loadStoreSettings(),
-          window.electronStore.get("pos_device"),
-        ]);
+        const settings = await loadStoreSettings();
         if (!isCancelled) {
+          const autoPackPricingScope = normalizeAutoPackPricingScope(
+            settings.auto_pack_pricing_scope,
+          );
           setStoreSettings({
             store_name: settings.store_name?.trim() || "AVA MY POS",
             vat_enabled: Boolean(settings.vat_enabled),
             vat_rate: Number(settings.vat_rate) || 0,
+            auto_pack_pricing_scope: autoPackPricingScope,
           });
-          setAutoConvertUnitPrice(getStoredAutoConvertUnitPrice(storedDevice));
+          setAutoConvertUnitPrice(
+            autoPackPricingScope === "ALL_CUSTOMERS" ||
+              (autoPackPricingScope === "MEMBERS_ONLY" &&
+                Boolean(selectedCustomer)),
+          );
         }
       } catch (err) {
         console.error("Error loading store settings:", err);
@@ -3179,6 +3466,7 @@ export default function PosLandingPages() {
             store_name: "AVA MY POS",
             vat_enabled: false,
             vat_rate: 0,
+            auto_pack_pricing_scope: "DISABLED",
           });
         }
       }
@@ -3191,7 +3479,7 @@ export default function PosLandingPages() {
     return () => {
       isCancelled = true;
     };
-  }, [currentPage]);
+  }, [currentPage, selectedCustomer]);
 
   useEffect(() => {
     if (currentPage === "pos") {
@@ -3702,10 +3990,14 @@ export default function PosLandingPages() {
 
         {currentPage === "productList" ? (
           <ProductLandingpage />
+        ) : currentPage === "receipts" ? (
+          <ReceiptPage />
         ) : currentPage === "categories" ? (
           <Categories />
         ) : currentPage === "printBarcode" ? (
           <PrintBarcode />
+        ) : currentPage === "productStocks" ? (
+          <StockPage />
         ) : currentPage === "priceQuotation" ? (
           <QuotationPage />
         ) : currentPage === "promotion" ? (
@@ -4291,118 +4583,17 @@ export default function PosLandingPages() {
         ) : null}
 
         {showHeldBillsModal ? (
-          <div
-            className="fixed inset-0 z-[100] grid place-items-center bg-black/50 p-4"
-            onClick={closeHeldBillsModal}
-          >
-            <div
-              className="flex max-h-[82vh] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-2xl"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="held-bills-title"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <div className="flex items-start justify-between gap-4 border-b border-slate-100 p-5">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-50 text-amber-700">
-                    <IconFolderOpen size={20} />
-                  </div>
-                  <div>
-                    <h3 id="held-bills-title" className="text-xl font-bold text-slate-900">
-                      เปิดบิลที่พัก
-                    </h3>
-                    <p className="mt-1 text-sm text-slate-500">
-                      เลือกบิลพักเพื่อแทนที่รายการในตะกร้าปัจจุบัน
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={closeHeldBillsModal}
-                  className="text-slate-400 hover:text-slate-700"
-                  aria-label="ปิด"
-                >
-                  <IconX size={20} />
-                </button>
-              </div>
-
-              <div className="min-h-0 flex-1 overflow-y-auto p-5">
-                {heldBillsError ? (
-                  <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                    {heldBillsError}
-                  </div>
-                ) : null}
-
-                {isLoadingHeldBills ? (
-                  <div className="grid min-h-40 place-items-center text-sm font-medium text-slate-500">
-                    กำลังโหลดบิลพัก...
-                  </div>
-                ) : heldBills.length ? (
-                  <div className="space-y-3">
-                    {heldBills.map((bill) => {
-                      const isOpening = openingHeldBillId === bill.id;
-
-                      return (
-                        <button
-                          key={String(bill.id)}
-                          type="button"
-                          onClick={() => void openHeldBill(bill)}
-                          disabled={openingHeldBillId !== null}
-                          className="w-full rounded-xl border border-slate-200 p-4 text-left transition hover:border-amber-300 hover:bg-amber-50/60 disabled:cursor-wait disabled:opacity-60"
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="truncate font-bold text-slate-900">
-                                {bill.hold_name || "บิลพัก"}
-                              </p>
-                              <p className="mt-1 text-xs text-slate-500">
-                                {bill.hold_no || "-"} · {formatHeldBillDate(bill.created_at)}
-                              </p>
-                            </div>
-                            <div className="text-right">
-                              <p className="font-bold text-slate-900">
-                                {formatBaht(Number(bill.total_amount) || 0)}
-                              </p>
-                              <p className="mt-1 text-xs text-slate-500">
-                                {Number(bill.item_count) || 0} รายการ / {Number(bill.total_qty) || 0} ชิ้น
-                              </p>
-                            </div>
-                          </div>
-                          {isOpening ? (
-                            <p className="mt-2 text-sm font-semibold text-amber-700">
-                              กำลังเปิดบิล...
-                            </p>
-                          ) : null}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="grid min-h-40 place-items-center rounded-xl border border-dashed border-slate-200 text-center text-sm text-slate-400">
-                    ยังไม่มีบิลพัก
-                  </div>
-                )}
-              </div>
-
-              <div className="flex gap-3 border-t border-slate-100 p-5">
-                <button
-                  type="button"
-                  onClick={() => void fetchHeldBillList()}
-                  disabled={isLoadingHeldBills || openingHeldBillId !== null}
-                  className="h-11 flex-1 rounded-xl border border-slate-200 font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  โหลดใหม่
-                </button>
-                <button
-                  type="button"
-                  onClick={closeHeldBillsModal}
-                  className="h-11 flex-1 rounded-xl bg-slate-900 font-semibold text-white hover:bg-slate-800"
-                >
-                  ปิด
-                </button>
-              </div>
-            </div>
-          </div>
+          <HeldBillsPopup
+            heldBills={heldBills}
+            heldBillsError={heldBillsError}
+            isLoadingHeldBills={isLoadingHeldBills}
+            openingHeldBillId={openingHeldBillId}
+            formatBaht={formatBaht}
+            formatHeldBillDate={formatHeldBillDate}
+            onClose={closeHeldBillsModal}
+            onRefresh={fetchHeldBillList}
+            onOpenHeldBill={openHeldBill}
+          />
         ) : null}
 
         {showHoldBillModal ? (
@@ -4479,141 +4670,18 @@ export default function PosLandingPages() {
         ) : null}
 
         {showCustomerPopup ? (
-          <div
-            className="fixed inset-0 z-[100] grid place-items-center bg-black/50 p-4"
-            onClick={closeCustomerPopup}
-          >
-            <div
-              className="flex max-h-[82vh] w-full max-w-xl flex-col rounded-2xl bg-white shadow-2xl"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="customer-picker-title"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <div className="flex items-start justify-between gap-4 border-b border-slate-100 p-5">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-50 text-[#1d6fd8]">
-                    <IconUserPlus size={20} />
-                  </div>
-                  <div>
-                    <h3
-                      id="customer-picker-title"
-                      className="text-xl font-bold text-slate-900"
-                    >
-                      เลือกลูกค้า
-                    </h3>
-                    <p className="mt-1 text-sm text-slate-500">
-                      ค้นหาแล้วเลือกลูกค้าสำหรับบิลนี้
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={closeCustomerPopup}
-                  className="text-slate-400 hover:text-slate-700"
-                  aria-label="ปิด"
-                >
-                  <IconX size={20} />
-                </button>
-              </div>
-
-              <div className="border-b border-slate-100 p-4">
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
-                    <IconSearch
-                      size={16}
-                      className="pointer-events-none absolute inset-y-0 left-3 my-auto text-slate-400"
-                    />
-                    <input
-                      ref={customerSearchRef}
-                      type="text"
-                      value={customerSearchQuery}
-                      onChange={(event) =>
-                        setCustomerSearchQuery(event.target.value)
-                      }
-                      placeholder="ค้นหาชื่อ / รหัส / เบอร์โทร"
-                      className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm text-slate-800 outline-none transition focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void fetchCustomerList()}
-                    disabled={isLoadingCustomers}
-                    title="โหลดข้อมูลใหม่"
-                    aria-label="โหลดข้อมูลลูกค้าใหม่"
-                    className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition hover:border-[#1d6fd8] hover:text-[#1d6fd8] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <IconRefresh size={18} />
-                  </button>
-                </div>
-              </div>
-
-              <div className="min-h-0 flex-1 overflow-y-auto p-4">
-                {isLoadingCustomers ? (
-                  <div className="grid h-40 place-items-center text-sm text-slate-400">
-                    กำลังโหลดข้อมูลลูกค้า...
-                  </div>
-                ) : customerLoadError ? (
-                  <div className="flex h-40 flex-col items-center justify-center gap-3 text-center">
-                    <p className="text-sm text-red-500">{customerLoadError}</p>
-                    <button
-                      type="button"
-                      onClick={() => void fetchCustomerList()}
-                      className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
-                    >
-                      <IconRefresh size={16} />
-                      ลองอีกครั้ง
-                    </button>
-                  </div>
-                ) : filteredCustomers.length === 0 ? (
-                  <div className="grid h-40 place-items-center text-center text-sm text-slate-400">
-                    ไม่พบลูกค้า
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {filteredCustomers.map((customer) => {
-                      const isSelected = selectedCustomer?.id === customer.id;
-
-                      return (
-                        <button
-                          key={customer.id}
-                          type="button"
-                          onClick={() => selectCustomer(customer)}
-                          className={`flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-left transition ${
-                            isSelected
-                              ? "border-[#1d6fd8] bg-blue-50"
-                              : "border-slate-200 hover:border-[#4d9bf0] hover:bg-blue-50/50"
-                          }`}
-                        >
-                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-[#1d6fd8]">
-                            <IconUser size={20} />
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                              <p className="truncate text-sm font-bold text-slate-900">
-                                {getCustomerName(customer)}
-                              </p>
-                              {customer.customer_code ? (
-                                <span className="shrink-0 rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500">
-                                  {customer.customer_code}
-                                </span>
-                              ) : null}
-                            </div>
-                            <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-slate-500">
-                              <IconPhone size={13} className="shrink-0" />
-                              <span className="truncate">
-                                {getCustomerPhone(customer)}
-                              </span>
-                            </div>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
+          <CustomerPickerPopup
+            searchInputRef={customerSearchRef}
+            searchQuery={customerSearchQuery}
+            onSearchQueryChange={setCustomerSearchQuery}
+            customers={filteredCustomers}
+            selectedCustomer={selectedCustomer}
+            isLoading={isLoadingCustomers}
+            error={customerLoadError}
+            onClose={closeCustomerPopup}
+            onRefresh={fetchCustomerList}
+            onSelectCustomer={selectCustomer}
+          />
         ) : null}
 
         {pendingScanInput ? (

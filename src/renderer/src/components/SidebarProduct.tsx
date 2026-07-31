@@ -1,13 +1,14 @@
 import {
-  IconCategory,
   IconArrowBackUp,
+  IconBarcode,
   IconBuildingStore,
+  IconCategory,
   IconChevronLeft,
   IconChevronRight,
+  IconFileInvoice,
+  IconGift,
   IconPackage,
-  IconBarcode,
-  IconFileInvoice, // เพิ่มไอคอนสำหรับใบเสนอราคา
-  IconGift, // เพิ่มไอคอนสำหรับโปรโมชั่น
+  IconPackages,
 } from "@tabler/icons-react";
 import AccountBar from "./AccountBar";
 import Logoutbar from "./Logoutbar";
@@ -31,13 +32,19 @@ export default function SidebarProduct({
 }: SidebarProductProps) {
   const menuItems = [
     { id: "productList", label: "รายการสินค้า", icon: IconPackage, title: "รายการสินค้า" },
+    {
+      id: "productStocks",
+      label: "สต๊อกสินค้า",
+      path: "/products/stocks",
+      icon: IconPackages,
+      title: "สต๊อกสินค้า",
+    },
     { id: "categories", label: "หมวดหมู่", icon: IconCategory, title: "หมวดหมู่สินค้า" },
     { id: "printBarcode", label: "พิมพ์บาร์โค้ดสินค้า", icon: IconBarcode, title: "พิมพ์บาร์โค้ดสินค้า" },
     { id: "priceQuotation", label: "ใบเสนอราคา", icon: IconFileInvoice, title: "ใบเสนอราคา" },
     { id: "promotion", label: "โปรโมชั่น", icon: IconGift, title: "โปรโมชั่น" },
   ];
 
-  // หา title ของเมนูที่กำลัง active
   const activeMenu = menuItems.find((item) => item.id === currentPage);
   const currentTitle = activeMenu?.title || "";
 
@@ -91,14 +98,13 @@ export default function SidebarProduct({
 
         <AccountBar isOpen={isOpen} />
 
-        {/* แสดง Title ของเมนูที่ถูกเลือก */}
-        {isOpen && currentTitle && (
-          <div className="px-4 py-3 border-b border-white/10">
-            <h2 className="text-base font-medium text-white/70 truncate">
+        {isOpen && currentTitle ? (
+          <div className="border-b border-white/10 px-4 py-3">
+            <h2 className="truncate text-base font-medium text-white/70">
               {currentTitle}
             </h2>
           </div>
-        )}
+        ) : null}
 
         <nav className="flex-1 overflow-y-auto px-3 py-4">
           <ul className="space-y-1">
@@ -110,7 +116,12 @@ export default function SidebarProduct({
                 <li key={item.id}>
                   <button
                     type="button"
-                    onClick={() => onNavigate(item.id)}
+                    onClick={() => {
+                      if ("path" in item) {
+                        window.history.pushState(null, "", item.path);
+                      }
+                      onNavigate(item.id);
+                    }}
                     title={item.title}
                     className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-base font-medium transition-all duration-200 ${
                       isActive
@@ -137,10 +148,10 @@ export default function SidebarProduct({
               <button
                 type="button"
                 onClick={handleGoBack}
-                className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-base font-medium transition-all duration-200 text-white/80 hover:bg-white/15 hover:text-white ${
+                className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-base font-medium text-white/80 transition-all duration-200 hover:bg-white/15 hover:text-white ${
                   isOpen ? "justify-start" : "justify-center"
                 }`}
-                title="ย้อนกลับไปหน้าแรก"
+                title="ย้อนกลับไปหน้าหลัก"
               >
                 <IconArrowBackUp size={20} className="shrink-0" />
                 {isOpen ? <span className="truncate">ย้อนกลับ</span> : null}

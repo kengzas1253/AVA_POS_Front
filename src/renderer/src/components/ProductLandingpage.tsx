@@ -10,6 +10,7 @@ import {
 import {
   IconBox,
   IconChevronDown,
+  IconEye,
   IconPencil,
   IconPhoto,
   IconPlus,
@@ -171,6 +172,18 @@ interface ScanProductResponse {
   product?: ScannedProduct;
 }
 
+interface OpeningStockPayload {
+  productId: number | string;
+  unitId: number | string;
+  storeId: number;
+  stockBaseQty: number;
+  deviceId: number;
+  referenceType: "MANUAL";
+  referenceId: string;
+  reasonCode: "OPENING";
+  note: string;
+}
+
 const PRICE_MODE_OPTIONS: { value: PriceMode; label: string; hint: string }[] = [
   {
     value: "FIXED_PRICE",
@@ -213,6 +226,28 @@ const EMPTY_FORM = {
 };
 
 const PRODUCT_NOT_FOUND_ADDABLE_MESSAGE = "ไม่มีสินค้าในระบบ สามารถเพิ่มสินค้าได้";
+
+const SCANNER_INPUT_INTERVAL_MS = 45;
+const SCANNER_NORMALIZE_DELAY_MS = 80;
+const SCANNER_MIN_RAPID_CHARS = 5;
+const BARCODE_MIN_DIGITS = 6;
+
+const shouldNormalizeScannerSearch = (
+  rawValue: string,
+  rapidInputCount: number,
+): boolean => {
+  if (rapidInputCount < SCANNER_MIN_RAPID_CHARS) {
+    return false;
+  }
+
+  const normalizedValue = normalizeBarcode(rawValue);
+  if (normalizedValue === rawValue.trim()) {
+    return false;
+  }
+
+  const digitCount = normalizedValue.replace(/\D/g, "").length;
+  return digitCount >= BARCODE_MIN_DIGITS && !/[\u0E00-\u0E7F]/.test(normalizedValue);
+};
 
 const createClientId = (): string =>
   typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -374,6 +409,112 @@ const getApiErrorMessage = async (
   }
 };
 
+const numberValue = (value: unknown, fallback = 0): number => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+};
+
+const getDeviceId = async (): Promise<number> => {
+  const stored = await window.electronStore.get("pos_device");
+  const device =
+    stored && typeof stored === "object"
+      ? (stored as {
+          id?: unknown;
+          deviceId?: unknown;
+          device_id?: unknown;
+          pos_device?: {
+            id?: unknown;
+            deviceId?: unknown;
+            device_id?: unknown;
+          };
+        })
+      : {};
+  const deviceId = numberValue(
+    device.device_id ??
+      device.deviceId ??
+      device.id ??
+      device.pos_device?.device_id ??
+      device.pos_device?.deviceId ??
+      device.pos_device?.id,
+  );
+  if (!deviceId) throw new Error("ไม่พบ deviceId กรุณาลงทะเบียนเครื่อง POS ก่อน");
+  return deviceId;
+};
+
+const getCurrentStoreId = async (): Promise<number> => {
+  const response = await authorizedFetch("/store/settings");
+  if (!response.ok) {
+    const message = await getApiErrorMessage(
+      response,
+      `โหลดข้อมูลร้านไม่สำเร็จ (${response.status})`,
+    );
+    throw new Error(message);
+  }
+
+  const payload = (await response.json().catch(() => ({}))) as {
+    data?: {
+      store?: {
+        id?: unknown;
+        storeId?: unknown;
+        store_id?: unknown;
+      };
+    };
+    store?: {
+      id?: unknown;
+      storeId?: unknown;
+      store_id?: unknown;
+    };
+  };
+  const store = payload.data?.store ?? payload.store;
+  const storeId = numberValue(store?.id ?? store?.storeId ?? store?.store_id);
+  if (!storeId) throw new Error("ไม่พบ storeId สำหรับบันทึกสต๊อก");
+  return storeId;
+};
+
+const createStockReferenceId = (): string => {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `OPEN-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(
+    now.getHours(),
+  )}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+};
+
+const createOpeningStock = async (payload: OpeningStockPayload): Promise<void> => {
+  const response = await authorizedFetch("/stocks/opening", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const message = await getApiErrorMessage(
+      response,
+      `บันทึกสต๊อกเริ่มต้นไม่สำเร็จ (${response.status})`,
+    );
+    throw new Error(message);
+  }
+};
+
+const updateMinStock = async (
+  productId: number | string,
+  minStockBaseQty: number,
+  storeId: number,
+): Promise<void> => {
+  const response = await authorizedFetch(`/stocks/${productId}/min-stock`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ minStockBaseQty, storeId }),
+  });
+
+  if (!response.ok) {
+    const message = await getApiErrorMessage(
+      response,
+      `กำหนดสต๊อกขั้นต่ำไม่สำเร็จ (${response.status})`,
+    );
+    throw new Error(message);
+  }
+};
+
 const translateApiErrorMessage = (message: string): string => {
   if (/Barcode already exists/i.test(message)) {
     return "บาร์โค้ดนี้มีอยู่ในระบบแล้ว";
@@ -389,6 +530,9 @@ const translateApiErrorMessage = (message: string): string => {
   }
   return message;
 };
+
+const isActiveProduct = (product: Product): boolean =>
+  String(product.status ?? "ACTIVE").toUpperCase() !== "INACTIVE";
 
 const unwrapUnitGroupsResponse = (payload: unknown): UnitGroup[] => {
   if (Array.isArray(payload)) {
@@ -624,6 +768,51 @@ const setBaseProductUnit = async (
   }
 
   return unwrapProductUnitResponse(await response.json().catch(() => ({})));
+};
+
+const deactivateProduct = async (product: Product): Promise<void> => {
+  const patchResponse = await authorizedFetch(`/products/${product.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status: "INACTIVE" }),
+  });
+
+  if (patchResponse.ok) {
+    return;
+  }
+
+  const unitId = product.unit_id ?? product.unit?.id;
+  const payload = {
+    sku: product.sku,
+    barcode: product.barcode,
+    description: product.description ?? null,
+    product_name: product.product_name,
+    category_id: Number(product.category_id) || product.category_id,
+    unit_code: product.unit_code,
+    unit_id: Number(unitId) || unitId,
+    price_mode: product.price_mode,
+    cost_price: Number(product.cost_price) || 0,
+    sale_price: Number(product.sale_price) || 0,
+    stock_qty: Number(product.stock_qty) || 0,
+    min_stock_qty: Number(product.min_stock_qty) || 0,
+    track_stock: product.track_stock,
+    allow_discount: product.allow_discount,
+    status: "INACTIVE",
+    image_url: product.image_url ?? null,
+  };
+  const putResponse = await authorizedFetch(`/products/${product.id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!putResponse.ok) {
+    const message = await getApiErrorMessage(
+      putResponse,
+      `ปิดการใช้งานสินค้าไม่สำเร็จ (${putResponse.status})`,
+    );
+    throw new Error(translateApiErrorMessage(message));
+  }
 };
 
 const findUnitByCode = (
@@ -887,6 +1076,11 @@ export default function ProductLandingpage() {
 
   const [searchTerm, setSearchTerm] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const searchInputTimingRef = useRef({
+    lastInputAt: 0,
+    rapidInputCount: 0,
+  });
+  const searchNormalizeTimerRef = useRef<number | null>(null);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>("");
   const [isCategoryMenuOpen, setIsCategoryMenuOpen] = useState(false);
 
@@ -894,6 +1088,7 @@ export default function ProductLandingpage() {
   const [editingProductId, setEditingProductId] = useState<
     Product["id"] | null
   >(null);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -918,6 +1113,8 @@ export default function ProductLandingpage() {
   // รูปสินค้าที่เลือกใหม่ (ยังไม่อัปโหลด) + พรีวิวในฟอร์ม
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
+  const [formImageUrl, setFormImageUrl] = useState<string | null>(null);
+  const [fullImagePreviewUrl, setFullImagePreviewUrl] = useState<string | null>(null);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -1049,8 +1246,43 @@ export default function ProductLandingpage() {
     });
   }, [debouncedSearch, loadProducts, selectedCategoryId]);
 
+  const handleSearchChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const rawValue = event.target.value;
+    const now = window.performance.now();
+    const timing = searchInputTimingRef.current;
+    const isRapidInput =
+      timing.lastInputAt > 0 && now - timing.lastInputAt <= SCANNER_INPUT_INTERVAL_MS;
+
+    timing.rapidInputCount = isRapidInput ? timing.rapidInputCount + 1 : 1;
+    timing.lastInputAt = now;
+
+    setSearchTerm(rawValue);
+
+    if (searchNormalizeTimerRef.current !== null) {
+      window.clearTimeout(searchNormalizeTimerRef.current);
+    }
+
+    searchNormalizeTimerRef.current = window.setTimeout(() => {
+      const latestTiming = searchInputTimingRef.current;
+      if (shouldNormalizeScannerSearch(rawValue, latestTiming.rapidInputCount)) {
+        setSearchTerm(normalizeBarcode(rawValue));
+      }
+      latestTiming.rapidInputCount = 0;
+      latestTiming.lastInputAt = 0;
+      searchNormalizeTimerRef.current = null;
+    }, SCANNER_NORMALIZE_DELAY_MS);
+  }, []);
+
   useEffect(() => {
     fetchCategories();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (searchNormalizeTimerRef.current !== null) {
+        window.clearTimeout(searchNormalizeTimerRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -1120,6 +1352,30 @@ export default function ProductLandingpage() {
       isCancelled = true;
     };
   }, [products]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const resolveFormImage = async () => {
+      if (!form.image_url) {
+        setFormImageUrl(null);
+        return;
+      }
+
+      const resolvedUrl =
+        resolvedImageUrls[String(editingProductId)] ??
+        (await resolveImageUrl(form.image_url));
+      if (!isCancelled) {
+        setFormImageUrl(resolvedUrl);
+      }
+    };
+
+    void resolveFormImage();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [editingProductId, form.image_url, resolvedImageUrls]);
 
   // จัดเรียงหมวดหมู่ โดยให้ "สินค้าทั่วไป" (General) ขึ้นก่อน
   const sortedCategories = useMemo(() => {
@@ -1205,7 +1461,7 @@ export default function ProductLandingpage() {
     setIsCategoryMenuOpen(false);
   };
 
-  const filteredProducts = products;
+  const filteredProducts = products.filter(isActiveProduct);
 
   const resetImageSelection = () => {
     if (imagePreviewUrl) {
@@ -1213,6 +1469,7 @@ export default function ProductLandingpage() {
     }
     setImageFile(null);
     setImagePreviewUrl(null);
+    setFormImageUrl(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -1220,6 +1477,7 @@ export default function ProductLandingpage() {
 
   const openAddModal = () => {
     setEditingProductId(null);
+    setEditingProduct(null);
     setForm({
       ...EMPTY_FORM,
       category_id: sortedCategories.length > 0 ? String(sortedCategories[0].id) : "",
@@ -1232,8 +1490,37 @@ export default function ProductLandingpage() {
     setSubmitError(null);
     setProductUnitsError(null);
     setOriginalImageUrl(null);
+    setFullImagePreviewUrl(null);
     resetImageSelection();
     setIsModalOpen(true);
+  };
+
+  const openFullImagePreview = async () => {
+    if (imagePreviewUrl) {
+      setFullImagePreviewUrl(imagePreviewUrl);
+      return;
+    }
+
+    const resolvedUrl =
+      formImageUrl ??
+      resolvedImageUrls[String(editingProductId)] ??
+      (await resolveImageUrl(form.image_url));
+    if (resolvedUrl) {
+      setFullImagePreviewUrl(resolvedUrl);
+    }
+  };
+
+  const openProductImagePreview = async (product: Product) => {
+    const resolvedUrl =
+      resolvedImageUrls[String(product.id)] ??
+      (await resolveImageUrl(product.image_url));
+    if (resolvedUrl) {
+      setFullImagePreviewUrl(resolvedUrl);
+    }
+  };
+
+  const closeFullImagePreview = () => {
+    setFullImagePreviewUrl(null);
   };
 
   const openEditModal = async (product: Product) => {
@@ -1293,6 +1580,7 @@ export default function ProductLandingpage() {
     );
 
     setEditingProductId(sourceProduct.id);
+    setEditingProduct(sourceProduct);
     setIsUnitLinkingEnabled(loadedProductUnits.length > 1);
     setIsUnitSectionOpen(loadedProductUnits.length > 1);
     setProductUnits(mappedProductUnits);
@@ -1329,6 +1617,7 @@ export default function ProductLandingpage() {
     setSelectedUnitGroupId(matchedUnit ? String(matchedUnit.unitGroup.id) : "");
     setOriginalImageUrl(sourceProduct.image_url ?? null);
     resetImageSelection();
+    setFullImagePreviewUrl(null);
     setIsModalOpen(true);
   };
 
@@ -1430,6 +1719,7 @@ export default function ProductLandingpage() {
         }
 
         setEditingProductId(null);
+        setEditingProduct(null);
         setSubmitError(PRODUCT_NOT_FOUND_ADDABLE_MESSAGE);
         return;
       }
@@ -1455,7 +1745,9 @@ export default function ProductLandingpage() {
       return;
     }
     resetImageSelection();
+    setFullImagePreviewUrl(null);
     setEditingProductId(null);
+    setEditingProduct(null);
     setOriginalImageUrl(null);
     setSelectedUnitGroupId("");
     setProductUnits([createEmptyProductUnit(1)]);
@@ -1485,6 +1777,7 @@ export default function ProductLandingpage() {
 
     setImageFile(file);
     setImagePreviewUrl(URL.createObjectURL(file));
+    setFormImageUrl(null);
   };
 
   const handleRemoveSelectedImage = () => {
@@ -1814,7 +2107,8 @@ export default function ProductLandingpage() {
       }
 
       const failedUnitNames: string[] = [];
-      const unitsToSave = isUnitLinkingEnabled ? productUnits : [];
+      const unitsToSave =
+        isUnitLinkingEnabled || isEditing ? productUnits : productUnitsForSubmit;
       const activeUnitsToSave = unitsToSave.filter((item) => !item.isDeleted);
       const newUnits = activeUnitsToSave.filter(
         (item) => item.isNew || !item.productUnitId,
@@ -1952,6 +2246,29 @@ export default function ProductLandingpage() {
         );
       }
 
+      if (!isEditing && !isService && form.track_stock) {
+        const [deviceId, storeId] = await Promise.all([
+          getDeviceId(),
+          getCurrentStoreId(),
+        ]);
+        await createOpeningStock({
+          productId: savedProductId,
+          unitId: Number(baseUnitItem.unitId) || baseUnitItem.unitId,
+          storeId,
+          stockBaseQty: Number(form.stock_qty) || 0,
+          deviceId,
+          referenceType: "MANUAL",
+          referenceId: createStockReferenceId(),
+          reasonCode: "OPENING",
+          note: "ตั้งยอดเริ่มต้น",
+        });
+        await updateMinStock(
+          savedProductId,
+          Number(form.min_stock_qty) || 0,
+          storeId,
+        );
+      }
+
       if (isUnitLinkingEnabled) {
         const refreshedUnits = await getProductUnits(savedProductId).catch(() => []);
         const refreshedFormUnits = refreshedUnits.map((item, index) =>
@@ -1969,6 +2286,7 @@ export default function ProductLandingpage() {
 
       setIsModalOpen(false);
       setEditingProductId(null);
+      setEditingProduct(null);
       setForm(EMPTY_FORM);
       setProductUnits([createEmptyProductUnit(1)]);
       originalProductUnitsRef.current = new Map();
@@ -2005,6 +2323,14 @@ export default function ProductLandingpage() {
     setProductPendingDelete(product);
   };
 
+  const requestDeleteEditingProduct = () => {
+    if (!editingProduct || isSubmitting) {
+      return;
+    }
+    setIsModalOpen(false);
+    setProductPendingDelete(editingProduct);
+  };
+
   const cancelDeleteProduct = () => {
     if (deletingProductId !== null) {
       return;
@@ -2021,21 +2347,10 @@ export default function ProductLandingpage() {
     setDeletingProductId(product.id);
 
     try {
-      const response = await authorizedFetch(`/products/${product.id}`, {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const message = await getApiErrorMessage(
-          response,
-          `ลบสินค้าไม่สำเร็จ (${response.status})`,
-        );
-        throw new Error(message);
-      }
-
-      // ลบรูปสินค้าที่ผูกอยู่ด้วย (ถ้ามี)
-      await deleteProductImage(product.image_url);
-
+      await deactivateProduct(product);
+      setProducts((currentProducts) =>
+        currentProducts.filter((item) => String(item.id) !== String(product.id)),
+      );
       setProductPendingDelete(null);
       await fetchProducts();
     } catch (err) {
@@ -2092,7 +2407,7 @@ export default function ProductLandingpage() {
           <input
             type="text"
             value={searchTerm}
-            onChange={(event) => setSearchTerm(event.target.value)}
+            onChange={handleSearchChange}
             placeholder="ค้นหาสินค้าด้วยชื่อ, SKU หรือบาร์โค้ด"
             className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
           />
@@ -2197,12 +2512,12 @@ export default function ProductLandingpage() {
                   className="flex flex-col gap-2 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3"
                 >
                   <div className="flex items-start gap-3">
-                    <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-[#1d6fd8]/10">
+                    <div className="flex h-16 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-100 bg-white">
                       {imageSrc ? (
                         <img
                           src={imageSrc}
                           alt={product.product_name}
-                          className="h-full w-full object-cover"
+                          className="h-full w-full object-contain"
                         />
                       ) : (
                         <IconBox size={20} className="text-[#1d6fd8]" />
@@ -2229,6 +2544,16 @@ export default function ProductLandingpage() {
                       ) : null}
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => void openProductImagePreview(product)}
+                        disabled={!product.image_url}
+                        title="ดูตัวอย่างรูป"
+                        aria-label="ดูตัวอย่างรูป"
+                        className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-white hover:text-[#1d6fd8] disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <IconEye size={16} />
+                      </button>
                       <button
                         type="button"
                         onClick={() => void openEditModal(product)}
@@ -2305,13 +2630,27 @@ export default function ProductLandingpage() {
               <h2 className="text-lg font-semibold text-slate-800">
                 {editingProductId !== null ? "แก้ไขสินค้า" : "เพิ่มสินค้า"}
               </h2>
-              <button
-                type="button"
-                onClick={closeModal}
-                className="text-slate-400 hover:text-slate-600"
-              >
-                <IconX size={20} />
-              </button>
+              <div className="flex items-center gap-2">
+                {editingProductId !== null ? (
+                  <button
+                    type="button"
+                    onClick={requestDeleteEditingProduct}
+                    disabled={isSubmitting || !editingProduct}
+                    title="ลบสินค้า"
+                    aria-label="ลบสินค้า"
+                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50"
+                  >
+                    <IconTrash size={17} />
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={closeModal}
+                  className="text-slate-400 hover:text-slate-600"
+                >
+                  <IconX size={20} />
+                </button>
+              </div>
             </div>
 
             <form onSubmit={handleSubmitProduct} className="space-y-4">
@@ -2327,9 +2666,9 @@ export default function ProductLandingpage() {
                         alt="พรีวิวรูปสินค้า"
                         className="h-full w-full object-cover"
                       />
-                    ) : form.image_url ? (
+                    ) : formImageUrl ? (
                       <img
-                        src={resolvedImageUrls[String(editingProductId)] ?? ""}
+                        src={formImageUrl}
                         alt="รูปสินค้าปัจจุบัน"
                         className="h-full w-full object-cover"
                       />
@@ -2354,6 +2693,15 @@ export default function ProductLandingpage() {
                         <IconUpload size={16} />
                         เลือกรูป
                       </label>
+                      {imagePreviewUrl || form.image_url ? (
+                        <button
+                          type="button"
+                          onClick={() => void openFullImagePreview()}
+                          className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-500 hover:bg-slate-50"
+                        >
+                          ดูตัวอย่างรูป
+                        </button>
+                      ) : null}
                       {imagePreviewUrl || form.image_url ? (
                         <button
                           type="button"
@@ -2997,7 +3345,7 @@ export default function ProductLandingpage() {
                 <p className="text-sm text-emerald-600">{submitError}</p>
               ) : null}
 
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
                   onClick={closeModal}
@@ -3025,6 +3373,33 @@ export default function ProductLandingpage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      ) : null}
+
+      {fullImagePreviewUrl ? (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4"
+          onClick={closeFullImagePreview}
+        >
+          <div
+            className="relative max-h-[92vh] max-w-[92vw]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={closeFullImagePreview}
+              className="absolute -right-3 -top-3 flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-500 shadow-lg hover:text-slate-800"
+              aria-label="ปิดตัวอย่างรูป"
+              title="ปิดตัวอย่างรูป"
+            >
+              <IconX size={20} />
+            </button>
+            <img
+              src={fullImagePreviewUrl}
+              alt="ตัวอย่างรูปสินค้า"
+              className="max-h-[92vh] max-w-[92vw] rounded-xl bg-white object-contain shadow-2xl"
+            />
           </div>
         </div>
       ) : null}

@@ -8,21 +8,17 @@ export interface PosMachineSettings {
   allow_below_cost?: boolean;
   minProfitAmount?: string | number | null;
   min_profit_amount?: string | number | null;
-  autoConvertUnitPrice?: boolean;
-  auto_convert_unit_price?: boolean;
 }
 
 export interface UpdatePosMachineSettingsPayload {
   machine_id: string;
   allowBelowCost: boolean;
   minProfitAmount: number;
-  autoConvertUnitPrice: boolean;
 }
 
 const toApiPayload = (payload: UpdatePosMachineSettingsPayload) => ({
   allow_below_cost: payload.allowBelowCost,
   min_profit_amount: payload.minProfitAmount,
-  autoConvertUnitPrice: payload.autoConvertUnitPrice,
 });
 
 interface PosMachineSettingsResponse {

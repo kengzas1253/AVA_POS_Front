@@ -3,6 +3,7 @@ import {
   IconBuildingStore,
   IconMapPin,
   IconGlobe,
+  IconSettings,
   IconRefresh,
   IconEdit,
   IconDeviceFloppy,
@@ -15,6 +16,11 @@ import {
 import { ensureValidAccessToken, refreshAccessToken } from "./auth";
 
 // Types
+export type AutoPackPricingScope =
+  | "DISABLED"
+  | "ALL_CUSTOMERS"
+  | "MEMBERS_ONLY";
+
 export interface StoreSettings {
   id: number;
   store_name: string;
@@ -42,6 +48,7 @@ export interface StoreSettings {
   timezone: string;
   allow_negative_stock: boolean;
   default_customer_name: string;
+  auto_pack_pricing_scope?: AutoPackPricingScope;
 }
 
 export interface PaymentAccount {
@@ -701,6 +708,75 @@ export default function StoreSetting({
       </SectionContent>
 
       {/* เว้นระยะด้านล่างกันเนื้อหาชิดขอบจอ/taskbar ตอนเลื่อนสุด */}
+      <SectionHeader
+        id="pack-pricing"
+        icon={<IconSettings size={18} />}
+        title="คิดราคาแพ็คและลังอัตโนมัติ"
+        expandedSections={expandedSections}
+        toggleSection={toggleSection}
+      />
+      <SectionContent id="pack-pricing" expandedSections={expandedSections}>
+        <div className="grid min-w-0 grid-cols-1 gap-3">
+          {[
+            {
+              value: "DISABLED" as const,
+              label: "ไม่แปลงราคาแพ็ค/ลังอัตโนมัติเลย",
+              description: "ขายตามราคาหน่วยที่สแกนหรือเลือกไว้เท่านั้น",
+            },
+            {
+              value: "ALL_CUSTOMERS" as const,
+              label: "แปลงราคาแพ็ค/ลังอัตโนมัติสำหรับทุกคน",
+              description: "เมื่อจำนวนหน่วยย่อยครบ ระบบจะคำนวณราคาแพ็ค/ลังให้อัตโนมัติ",
+            },
+            {
+              value: "MEMBERS_ONLY" as const,
+              label: "แปลงราคาแพ็ค/ลังอัตโนมัติเฉพาะสมาชิก",
+              description: "ใช้ราคาแพ็ค/ลังอัตโนมัติเมื่อเลือกข้อมูลลูกค้าสมาชิกในหน้าขาย",
+            },
+          ].map((option) => {
+            const selectedValue =
+              (isEditing
+                ? formStore.auto_pack_pricing_scope
+                : store.auto_pack_pricing_scope) ?? "DISABLED";
+            const isSelected = selectedValue === option.value;
+
+            return (
+              <label
+                key={option.value}
+                className={`flex gap-3 rounded-xl border p-4 transition ${
+                  isSelected
+                    ? "border-[#1d6fd8] bg-blue-50 ring-2 ring-[#1d6fd8]/15"
+                    : "border-slate-200 bg-white"
+                } ${isEditing ? "cursor-pointer hover:border-slate-300" : "opacity-80"}`}
+              >
+                <input
+                  type="radio"
+                  name="auto_pack_pricing_scope"
+                  value={option.value}
+                  checked={isSelected}
+                  disabled={!isEditing}
+                  onChange={() =>
+                    updateStoreField("auto_pack_pricing_scope", option.value)
+                  }
+                  className="mt-1 h-4 w-4 border-slate-300 text-[#1d6fd8] focus:ring-[#1d6fd8]"
+                />
+                <span>
+                  <span className="block text-sm font-semibold text-slate-700">
+                    {option.label}
+                  </span>
+                  <span className="mt-1 block text-xs leading-5 text-slate-500">
+                    {option.description}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        <p className="rounded-xl bg-blue-50 px-3 py-2 text-xs text-blue-700">
+          หาก 1 แพ็คมี 6 กล่อง เมื่อสแกนครบ 6 ครั้ง ระบบจะใช้ราคาแพ็คโดยอัตโนมัติตามเงื่อนไขที่เลือก
+        </p>
+      </SectionContent>
+
       <div className="h-12" aria-hidden="true" />
     </div>
 
