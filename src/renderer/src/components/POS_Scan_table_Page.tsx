@@ -10,6 +10,7 @@ import {
   IconFolderOpen,
   IconKeyboard,
   IconMenu2,
+  IconMinus,
   IconPencil,
   IconPlus,
   IconPower,
@@ -29,6 +30,7 @@ import CustomerPickerPopup, {
 import HeldBillsPopup, { type HeldBillSummary } from "./HeldBillsPopup";
 import KeyboardShortcutsPopup from "./KeyboardShortcutsPopup";
 import POSPayment from "./POSPayment";
+import DiscountPopup from "./DiscountPopup";
 import POSSettingPage from "./POSSettingPage";
 import ProductLandingpage from "./ProductLandingpage";
 import PrintBarcode from "./PrintBarcode";
@@ -52,9 +54,17 @@ import Settingbar from "./Settingbar";
 import SettingPages from "./SettingPages";
 import StockPage from "./StockPage";
 import { UserInfoPage } from "./UserInfoPage";
-import { normalizeBarcode } from "./BarcodeNormalizer";
+import { checkDiscount } from "./posDiscountService";
+import {
+  normalizeBarcode,
+  normalizeBarcodeScannerKey,
+} from "./BarcodeNormalizer";
 import { ensureValidAccessToken, refreshAccessToken } from "./auth";
 import { usePosScanSound } from "./usePosScanSound";
+import {
+  calculateAutoPackCart,
+  SELECTED_POS_CUSTOMER_KEY,
+} from "./autoPackPricingService";
 
 interface CustomersResponse {
   data?: PosCustomer[] | { customers?: PosCustomer[]; data?: PosCustomer[] };
@@ -81,8 +91,14 @@ interface ScannedProduct {
   unit?: string;
   unitCode?: string;
   unit_code?: string;
+  unitNameTh?: string | null;
+  unit_name_th?: string | null;
+  unitName?: string | null;
+  unit_name?: string | null;
   image_url?: string | null;
   imageUrl?: string | null;
+  allow_discount?: boolean | number | string | null;
+  allowDiscount?: boolean | number | string | null;
 }
 
 interface ScanProductResponse {
@@ -110,9 +126,17 @@ interface ScanCartItem {
   barcode: string;
   name: string;
   unit?: string;
+  unit_code?: string | null;
+  unitNameTh?: string | null;
+  unit_name_th?: string | null;
+  unitName?: string | null;
+  unit_name?: string | null;
   qty: number;
   price: number;
   image_url?: string | null;
+  allow_discount: boolean;
+  discount: number;
+  discount_amount: number;
 }
 
 interface HeldBillItem {
@@ -125,6 +149,9 @@ interface HeldBillItem {
   qty?: number | string | null;
   sale_price?: number | string | null;
   unit_price?: number | string | null;
+  discount_amount?: number | string | null;
+  allow_discount?: boolean | number | string | null;
+  allowDiscount?: boolean | number | string | null;
 }
 
 interface HeldBillDetail extends HeldBillSummary {
@@ -183,7 +210,6 @@ interface HeldBillPayload {
   items: HeldBillPayloadItem[];
 }
 
-const SELECTED_POS_CUSTOMER_KEY = "pos_selected_customer";
 const BARCODE_INPUT_TIMEOUT_MS = 300;
 const BARCODE_NOT_FOUND_MESSAGE = "ไม่พบบาร์โค้ดสินค้า";
 const BARCODE_SCAN_FAILED_MESSAGE =
@@ -202,6 +228,76 @@ const getStoredMachineId = (storedDevice: unknown): string | null => {
     ? machineId.trim()
     : null;
 };
+
+const getStoredAllowBelowCost = (storedDevice: unknown): boolean => {
+  if (!storedDevice || typeof storedDevice !== "object") {
+    return false;
+  }
+
+  const device = storedDevice as {
+    allow_below_cost?: unknown;
+    allowBelowCost?: unknown;
+    pos_device?: {
+      allow_below_cost?: unknown;
+      allowBelowCost?: unknown;
+    };
+  };
+
+  const value =
+    device.allow_below_cost ??
+    device.allowBelowCost ??
+    device.pos_device?.allow_below_cost ??
+    device.pos_device?.allowBelowCost;
+
+  return value === true || value === "true";
+};
+
+const getDiscountErrorMessage = (message?: string): string => {
+  if (message === "This discount exceeds the allowed limit.") {
+    return "ส่วนลดนี้เกินวงเงินที่อนุญาต";
+  }
+
+  if (message === "Unable to validate the discount. Please try again.") {
+    return "ไม่สามารถตรวจสอบส่วนลดได้ กรุณาลองใหม่อีกครั้ง";
+  }
+
+  if (
+    message ===
+    "Unable to validate the discount because POS device information is missing."
+  ) {
+    return "ไม่สามารถตรวจสอบส่วนลดได้ เนื่องจากไม่พบข้อมูลเครื่อง POS";
+  }
+
+  if (message && !message.includes("à")) {
+    return message;
+  }
+
+  return "ไม่สามารถตรวจสอบส่วนลดได้ กรุณาลองใหม่อีกครั้ง";
+};
+
+const normalizeAllowDiscount = (
+  value: boolean | number | string | null | undefined,
+  fallback = true,
+): boolean => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalizedValue = value.trim().toLowerCase();
+    if (["false", "0", "no", "n"].includes(normalizedValue)) return false;
+    if (["true", "1", "yes", "y"].includes(normalizedValue)) return true;
+  }
+
+  return fallback;
+};
+
+const getAllowDiscount = (
+  product: {
+    allow_discount?: boolean | number | string | null;
+    allowDiscount?: boolean | number | string | null;
+  },
+  fallback = true,
+): boolean =>
+  normalizeAllowDiscount(product.allow_discount ?? product.allowDiscount, fallback);
 
 const getStoredUserId = (storedUser: unknown): string | null => {
   if (!storedUser || typeof storedUser !== "object") return null;
@@ -333,6 +429,13 @@ const getScannedProductPrice = (product: ScannedProduct): number =>
 const getScannedProductUnitCode = (product: ScannedProduct): string | undefined =>
   product.unitCode ?? product.unit_code ?? product.unit;
 
+const getScannedProductUnitName = (product: ScannedProduct): string | null =>
+  product.unitNameTh ??
+  product.unit_name_th ??
+  product.unitName ??
+  product.unit_name ??
+  null;
+
 const getScannedProductImageUrl = (product: ScannedProduct): string | null =>
   product.image_url ?? product.imageUrl ?? null;
 
@@ -354,13 +457,74 @@ const mapFavoriteProductToScannedProduct = (
   unit: product.unitCode ?? product.unit_code,
   unitCode: product.unitCode ?? product.unit_code,
   unit_code: product.unit_code,
+  unitNameTh: product.unitNameTh ?? product.unit_name_th ?? null,
+  unit_name_th: product.unit_name_th ?? product.unitNameTh ?? null,
+  unitName: product.unitNameTh ?? product.unit_name_th ?? null,
+  unit_name: product.unit_name_th ?? product.unitNameTh ?? null,
   image_url: product.image_url ?? null,
+  allow_discount: normalizeAllowDiscount(
+    product.allow_discount as boolean | number | string | null | undefined,
+  ),
+  allowDiscount: normalizeAllowDiscount(
+    product.allowDiscount as boolean | number | string | null | undefined,
+  ),
 });
 
 const isBarcodeSearchKeyword = (keyword: string): boolean => {
   const normalizedKeyword = normalizeBarcode(keyword);
   const digitCount = normalizedKeyword.replace(/\D/g, "").length;
   return digitCount >= 6 && /^[A-Z0-9-]+$/.test(normalizedKeyword);
+};
+
+const isIncreaseQtyKey = (event: KeyboardEvent): boolean =>
+  event.key === "+" || event.key === "=" || event.code === "NumpadAdd";
+
+const isDecreaseQtyKey = (event: KeyboardEvent): boolean =>
+  event.key === "-" || event.key === "_" || event.code === "NumpadSubtract";
+
+const isValidEan13 = (barcode: string): boolean => {
+  if (!/^\d{13}$/.test(barcode)) return false;
+
+  const sum = barcode
+    .slice(0, 12)
+    .split("")
+    .reduce(
+      (total, digit, index) => total + Number(digit) * (index % 2 === 0 ? 1 : 3),
+      0,
+    );
+  const checkDigit = (10 - (sum % 10)) % 10;
+  return checkDigit === Number(barcode[12]);
+};
+
+const getEan13RepairCandidates = (barcode: string): string[] => {
+  if (!/^\d{12}$/.test(barcode)) return [];
+
+  const candidates = new Set<string>();
+  for (let position = barcode.length - 1; position >= 0; position -= 1) {
+    for (let digit = 0; digit <= 9; digit += 1) {
+      const candidate =
+        barcode.slice(0, position) + String(digit) + barcode.slice(position);
+      if (isValidEan13(candidate)) {
+        candidates.add(candidate);
+      }
+    }
+  }
+
+  return Array.from(candidates);
+};
+
+const getScannerDigitFromKeyEvent = (
+  event: ReactKeyboardEvent<HTMLInputElement>,
+): string | null => {
+  if (/^Digit\d$/.test(event.code)) {
+    return event.code.replace("Digit", "");
+  }
+
+  if (/^Numpad\d$/.test(event.code)) {
+    return event.code.replace("Numpad", "");
+  }
+
+  return null;
 };
 
 const getApiBaseUrl = async (): Promise<string> => {
@@ -509,6 +673,9 @@ const mapHeldBillItemToScanItem = (
     unit: item.unit_code ?? undefined,
     qty,
     price,
+    allow_discount: getAllowDiscount(item),
+    discount: Number(item.discount_amount ?? 0) || 0,
+    discount_amount: Number(item.discount_amount ?? 0) || 0,
   };
 };
 
@@ -737,6 +904,10 @@ export default function POSScanTablePage() {
   const [isSearchingProducts, setIsSearchingProducts] = useState(false);
   const [scanItems, setScanItems] = useState<ScanCartItem[]>([]);
   const [scanItemImageUrls, setScanItemImageUrls] = useState<Record<string, string>>({});
+  const [discountPopupItemId, setDiscountPopupItemId] = useState<string | null>(null);
+  const [discountInputValue, setDiscountInputValue] = useState("");
+  const [discountPopupError, setDiscountPopupError] = useState<string | null>(null);
+  const [isCheckingDiscount, setIsCheckingDiscount] = useState(false);
   const [storeSettings, setStoreSettings] = useState<StoreSettings>({
     store_name: "AVA MY POS",
   });
@@ -748,8 +919,10 @@ export default function POSScanTablePage() {
   const customerSearchRef = useRef<HTMLInputElement>(null);
   const barcodeInputRef = useRef<HTMLInputElement>(null);
   const scannerInputRef = useRef<HTMLInputElement>(null);
+  const sourceScanItemsRef = useRef<ScanCartItem[]>([]);
   const barcodeBufferRef = useRef("");
   const barcodeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const discountInputRef = useRef<HTMLInputElement>(null);
   const isScanningRef = useRef(false);
   const pendingBarcodeScanQueueRef = useRef<string[]>([]);
   const holdBillNameRef = useRef<HTMLInputElement>(null);
@@ -834,11 +1007,50 @@ export default function POSScanTablePage() {
 
   const itemCount = scanItems.length;
   const totalQty = scanItems.reduce((sum, item) => sum + item.qty, 0);
-  const totalAmount = scanItems.reduce(
+  const subTotal = scanItems.reduce(
     (sum, item) => sum + item.price * item.qty,
     0,
   );
+  const discountAmount = scanItems.reduce(
+    (sum, item) => sum + Math.max(Number(item.discount ?? item.discount_amount ?? 0) || 0, 0),
+    0,
+  );
+  const totalAmount = Math.max(subTotal - discountAmount, 0);
+  const discountPopupItem = discountPopupItemId
+    ? scanItems.find((item) => item.id === discountPopupItemId) ?? null
+    : null;
   const displayStoreName = storeSettings.store_name?.trim() || "AVA MY POS";
+
+  const commitScanItemsChange = async (
+    nextSourceItems: ScanCartItem[],
+    selectedItemId?: string | null,
+  ) => {
+    sourceScanItemsRef.current = nextSourceItems;
+
+    try {
+      const autoPackResult = await calculateAutoPackCart(nextSourceItems);
+      setStoreSettings((current) => ({
+        ...current,
+        ...autoPackResult.settings,
+      }));
+      setScanItems(autoPackResult.items);
+      setSelectedScanItemId(
+        selectedItemId ??
+          autoPackResult.items.at(-1)?.id ??
+          nextSourceItems.at(-1)?.id ??
+          null,
+      );
+    } catch (error) {
+      console.error("Calculate scan-only auto pack pricing error:", error);
+      setScanItems(nextSourceItems);
+      setSelectedScanItemId(selectedItemId ?? nextSourceItems.at(-1)?.id ?? null);
+      setScanMessage(
+        error instanceof Error && error.message
+          ? error.message
+          : "ไม่สามารถคำนวณราคาแพ็คได้",
+      );
+    }
+  };
 
   useEffect(() => {
     let isCancelled = false;
@@ -867,55 +1079,62 @@ export default function POSScanTablePage() {
     };
   }, [scanItems]);
 
-  const addScannedProductToTable = (product: ScannedProduct) => {
+  const addScannedProductToTable = async (product: ScannedProduct) => {
     const productId = getScannedProductId(product);
     const productUnitId = getScannedProductUnitId(product);
     const barcode = String(product.barcode ?? "").trim();
     const imageUrl = getScannedProductImageUrl(product);
     const nextItemId = `${productUnitId ?? productId}-${barcode}`;
+    const items = sourceScanItemsRef.current;
 
-    setScanItems((items) => {
-      const existingIndex = items.findIndex((item) => {
-        if (item.productUnitId != null && productUnitId != null) {
-          return String(item.productUnitId) === String(productUnitId);
-        }
-
-        return (
-          String(item.productId) === String(productId) &&
-          String(item.barcode) === barcode
-        );
-      });
-
-      if (existingIndex >= 0) {
-        setSelectedScanItemId(items[existingIndex].id);
-        return items.map((item, index) =>
-          index === existingIndex
-            ? { ...item, image_url: item.image_url ?? imageUrl, qty: item.qty + 1 }
-            : item,
-        );
+    const existingIndex = items.findIndex((item) => {
+      if (item.productUnitId != null && productUnitId != null) {
+        return String(item.productUnitId) === String(productUnitId);
       }
 
-      setSelectedScanItemId(nextItemId);
-      return [
-        ...items,
-        {
-          id: nextItemId,
-          productId,
-          productUnitId,
-          barcode,
-          name: getScannedProductName(product),
-          unit: getScannedProductUnitCode(product),
-          qty: 1,
-          price: getScannedProductPrice(product),
-          image_url: imageUrl,
-        },
-      ];
+      return (
+        String(item.productId) === String(productId) &&
+        String(item.barcode) === barcode
+      );
     });
+
+    const nextItems =
+      existingIndex >= 0
+        ? items.map((item, index) =>
+            index === existingIndex
+              ? { ...item, image_url: item.image_url ?? imageUrl, qty: item.qty + 1 }
+              : item,
+          )
+        : [
+            ...items,
+            {
+              id: nextItemId,
+              productId,
+              productUnitId,
+              barcode,
+              name: getScannedProductName(product),
+              unit: getScannedProductUnitCode(product),
+              unit_code: getScannedProductUnitCode(product) ?? null,
+              unitNameTh: getScannedProductUnitName(product),
+              unitName: getScannedProductUnitName(product),
+              qty: 1,
+              price: getScannedProductPrice(product),
+              image_url: imageUrl,
+              allow_discount: getAllowDiscount(product),
+              discount: 0,
+              discount_amount: 0,
+            },
+          ];
+
+    await commitScanItemsChange(
+      nextItems,
+      existingIndex >= 0 ? items[existingIndex].id : nextItemId,
+    );
   };
 
-  const selectSearchedProduct = (product: ScannedProduct) => {
+  const selectSearchedProduct = async (product: ScannedProduct) => {
     const isFirstProductScan = scanItems.length === 0;
-    addScannedProductToTable(product);
+    await addScannedProductToTable(product);
     if (isFirstProductScan) {
       playFirstProductScan();
     }
@@ -927,39 +1146,63 @@ export default function POSScanTablePage() {
   };
 
   const addFavoriteProduct = (product: FavoriteProduct) => {
-    selectSearchedProduct(mapFavoriteProductToScannedProduct(product));
+    void selectSearchedProduct(mapFavoriteProductToScannedProduct(product));
   };
 
   const updateItemQty = (itemId: string, delta: number) => {
-    setScanItems((items) => {
-      const nextItems = items
-        .map((item) =>
-          item.id === itemId
-            ? { ...item, qty: Math.max(0, item.qty + delta) }
-            : item,
-        )
-        .filter((item) => item.qty > 0);
-
-      if (!nextItems.some((item) => item.id === itemId)) {
-        setSelectedScanItemId(nextItems.at(-1)?.id ?? null);
-      }
-
-      return nextItems;
-    });
+    const displayItem = scanItems.find((item) => item.id === itemId);
+    const sourceItemId =
+      sourceScanItemsRef.current.find((item) => item.id === itemId)?.id ??
+      sourceScanItemsRef.current.find(
+        (item) =>
+          displayItem &&
+          String(item.productId) === String(displayItem.productId),
+      )?.id ??
+      itemId;
+    const nextItems = sourceScanItemsRef.current
+      .map((item) =>
+        item.id === sourceItemId
+          ? {
+              ...item,
+              qty: Math.max(0, item.qty + delta),
+              discount: Math.min(
+                item.discount || 0,
+                item.price * Math.max(0, item.qty + delta),
+              ),
+              discount_amount: Math.min(
+                item.discount_amount || 0,
+                item.price * Math.max(0, item.qty + delta),
+              ),
+            }
+          : item,
+      )
+      .filter((item) => item.qty > 0);
+    void commitScanItemsChange(
+      nextItems,
+      nextItems.some((item) => item.id === sourceItemId)
+        ? sourceItemId
+        : nextItems.at(-1)?.id ?? null,
+    );
   };
 
   const removeItem = (itemId: string) => {
-    setScanItems((items) => {
-      const nextItems = items.filter((item) => item.id !== itemId);
-      setSelectedScanItemId((currentId) => {
-        if (currentId !== itemId) return currentId;
-        return nextItems.at(-1)?.id ?? null;
-      });
-      return nextItems;
-    });
+    const displayItem = scanItems.find((item) => item.id === itemId);
+    const sourceItemId =
+      sourceScanItemsRef.current.find((item) => item.id === itemId)?.id ??
+      sourceScanItemsRef.current.find(
+        (item) =>
+          displayItem &&
+          String(item.productId) === String(displayItem.productId),
+      )?.id ??
+      itemId;
+    const nextItems = sourceScanItemsRef.current.filter(
+      (item) => item.id !== sourceItemId,
+    );
+    void commitScanItemsChange(nextItems, nextItems.at(-1)?.id ?? null);
   };
 
   const clearAllItems = () => {
+    sourceScanItemsRef.current = [];
     setScanItems([]);
     setSelectedScanItemId(null);
     setScanMessage(null);
@@ -983,6 +1226,132 @@ export default function POSScanTablePage() {
     const itemId = getActiveScanItemId();
     if (!itemId) return;
     removeItem(itemId);
+  };
+
+  const changeItemDiscount = (itemId: string, discount: number) => {
+    setScanItems((items) =>
+      items.map((item) => {
+        if (item.id !== itemId || !item.allow_discount) {
+          return item;
+        }
+
+        const lineTotal = item.price * item.qty;
+        const nextDiscount = Math.min(Math.max(discount, 0), lineTotal);
+        return {
+          ...item,
+          discount: nextDiscount,
+          discount_amount: nextDiscount,
+        };
+      }),
+    );
+  };
+
+  const openDiscountPopup = (itemId: string) => {
+    const item = scanItems.find((scanItem) => scanItem.id === itemId);
+    if (!item || !item.allow_discount) return;
+
+    setSelectedScanItemId(itemId);
+    setDiscountPopupItemId(itemId);
+    setDiscountInputValue(item.discount ? String(item.discount) : "");
+    setDiscountPopupError(null);
+  };
+
+  const closeDiscountPopup = () => {
+    if (isCheckingDiscount) return;
+
+    setDiscountPopupItemId(null);
+    setDiscountInputValue("");
+    setDiscountPopupError(null);
+    focusScannerInput();
+  };
+
+  const confirmDiscountPopup = async () => {
+    if (!discountPopupItemId || isCheckingDiscount) return;
+
+    setDiscountPopupError(null);
+
+    const currentItem = scanItems.find((item) => item.id === discountPopupItemId);
+    const discount = Number(discountInputValue);
+    const lineTotal = currentItem ? currentItem.price * currentItem.qty : 0;
+
+    if (!currentItem) {
+      setDiscountPopupError("ไม่พบรายการสินค้าที่ต้องการให้ส่วนลด");
+      return;
+    }
+
+    if (!Number.isFinite(discount)) {
+      setDiscountPopupError("กรุณากรอกส่วนลดเป็นตัวเลข");
+      return;
+    }
+
+    if (discount < 0) {
+      setDiscountPopupError("ส่วนลดต้องไม่ติดลบ");
+      return;
+    }
+
+    if (discount > lineTotal) {
+      setDiscountPopupError("ส่วนลดต้องไม่เกินยอดรวมรายการสินค้า");
+      return;
+    }
+
+    let storedDevice: unknown;
+    try {
+      storedDevice = await window.electronStore.get("pos_device");
+    } catch (error) {
+      console.error("Read POS device settings error:", error);
+      setDiscountPopupError(getDiscountErrorMessage());
+      return;
+    }
+
+    const allowBelowCost = getStoredAllowBelowCost(storedDevice);
+    if (allowBelowCost !== true) {
+      changeItemDiscount(discountPopupItemId, discount);
+      closeDiscountPopup();
+      return;
+    }
+
+    const machineId = getStoredMachineId(storedDevice);
+    if (!currentItem.productId || !machineId) {
+      setDiscountPopupError(
+        getDiscountErrorMessage(
+          "Unable to validate the discount because POS device information is missing.",
+        ),
+      );
+      return;
+    }
+
+    try {
+      setIsCheckingDiscount(true);
+      const response = await checkDiscount({
+        product_id: String(currentItem.productId),
+        qty: currentItem.qty,
+        machine_id: machineId,
+        discount_amount: discount,
+      });
+
+      if (!response.permitted) {
+        setDiscountPopupError(
+          getDiscountErrorMessage(
+            response.message || "This discount exceeds the allowed limit.",
+          ),
+        );
+        return;
+      }
+
+      changeItemDiscount(discountPopupItemId, discount);
+      setDiscountPopupItemId(null);
+      setDiscountInputValue("");
+      focusScannerInput();
+    } catch (error) {
+      console.error("Check discount error:", error);
+      setDiscountPopupError(
+        error instanceof Error && error.message
+          ? getDiscountErrorMessage(error.message)
+          : getDiscountErrorMessage(),
+      );
+    } finally {
+      setIsCheckingDiscount(false);
+    }
   };
 
   const openClearConfirm = () => {
@@ -1044,10 +1413,12 @@ export default function POSScanTablePage() {
           cost_price: 0,
           sale_price: unitPrice,
           unit_price: unitPrice,
-          discount_amount: 0,
-          total_amount: qty * unitPrice,
+          discount_amount: Math.max(Number(item.discount ?? item.discount_amount ?? 0) || 0, 0),
+          total_amount:
+            qty * unitPrice -
+            Math.max(Number(item.discount ?? item.discount_amount ?? 0) || 0, 0),
           track_stock: false,
-          allow_discount: true,
+          allow_discount: item.allow_discount,
           image_url: null,
           note: "",
         };
@@ -1131,21 +1502,28 @@ export default function POSScanTablePage() {
     setSearchResults([]);
 
     try {
-      const result = await scanProduct(normalizedBarcode);
+      const barcodeCandidates = [
+        normalizedBarcode,
+        ...getEan13RepairCandidates(normalizedBarcode),
+      ];
 
-      if (result.code === "PRODUCT_NOT_FOUND") {
-        playNoProductsFound();
-        setScanMessage(BARCODE_NOT_FOUND_MESSAGE);
+      for (const barcodeCandidate of barcodeCandidates) {
+        const result = await scanProduct(barcodeCandidate);
+
+        if (result.code === "PRODUCT_NOT_FOUND") {
+          continue;
+        }
+
+        if (!result.success || !result.product) {
+          continue;
+        }
+
+        await selectSearchedProduct(result.product);
         return;
       }
 
-      if (!result.success || !result.product) {
-        playNoProductsFound();
-        setScanMessage(BARCODE_NOT_FOUND_MESSAGE);
-        return;
-      }
-
-      selectSearchedProduct(result.product);
+      playNoProductsFound();
+      setScanMessage(BARCODE_NOT_FOUND_MESSAGE);
     } catch (error) {
       console.error("Scan product error:", error);
       setScanMessage(
@@ -1208,7 +1586,7 @@ export default function POSScanTablePage() {
       });
 
       if (products.length === 1 || exactMatch) {
-        selectSearchedProduct(exactMatch ?? products[0]);
+        await selectSearchedProduct(exactMatch ?? products[0]);
         return;
       }
 
@@ -1252,17 +1630,36 @@ export default function POSScanTablePage() {
       return;
     }
 
+    const scannerDigit = getScannerDigitFromKeyEvent(event);
+    if (scannerDigit) {
+      event.preventDefault();
+      event.stopPropagation();
+      barcodeBufferRef.current += scannerDigit;
+      setBarcodeBuffer(barcodeBufferRef.current);
+
+      if (barcodeTimerRef.current) {
+        clearTimeout(barcodeTimerRef.current);
+      }
+      barcodeTimerRef.current = setTimeout(() => {
+        barcodeBufferRef.current = "";
+        setBarcodeBuffer("");
+      }, BARCODE_INPUT_TIMEOUT_MS);
+      return;
+    }
+
     if (
       event.key.length !== 1 ||
       event.ctrlKey ||
       event.altKey ||
-      event.metaKey
+      event.metaKey ||
+      ["+", "=", "_"].includes(event.key)
     ) {
       return;
     }
 
     event.preventDefault();
-    barcodeBufferRef.current += event.key;
+    event.stopPropagation();
+    barcodeBufferRef.current += normalizeBarcodeScannerKey(event.key);
     setBarcodeBuffer(barcodeBufferRef.current);
 
     if (barcodeTimerRef.current) {
@@ -1304,13 +1701,24 @@ export default function POSScanTablePage() {
 
   const selectCustomer = (customer: PosCustomer) => {
     setSelectedCustomer(customer);
-    void window.electronStore.set(SELECTED_POS_CUSTOMER_KEY, customer);
+    void window.electronStore
+      .set(SELECTED_POS_CUSTOMER_KEY, customer)
+      .then(() => commitScanItemsChange(sourceScanItemsRef.current, selectedScanItemId))
+      .catch((error) => {
+        console.error("Select scan-only customer error:", error);
+        setScanMessage("ไม่สามารถบันทึกสมาชิกที่เลือกได้");
+      });
     closeCustomerPopup();
   };
 
   const clearSelectedCustomer = () => {
     setSelectedCustomer(null);
-    void window.electronStore.set(SELECTED_POS_CUSTOMER_KEY, null);
+    void window.electronStore
+      .set(SELECTED_POS_CUSTOMER_KEY, null)
+      .then(() => commitScanItemsChange(sourceScanItemsRef.current, selectedScanItemId))
+      .catch((error) => {
+        console.error("Clear scan-only customer error:", error);
+      });
     focusScannerInput();
   };
 
@@ -1357,8 +1765,7 @@ export default function POSScanTablePage() {
       const detail = await loadHeldBillDetail(heldBill.id);
       const items = detail.held_bill_items ?? detail.items ?? [];
       const nextItems = items.map(mapHeldBillItemToScanItem);
-      setScanItems(nextItems);
-      setSelectedScanItemId(nextItems.at(-1)?.id ?? null);
+      await commitScanItemsChange(nextItems, nextItems.at(-1)?.id ?? null);
       setShowHeldBillsModal(false);
       setScanMessage(null);
       focusScannerInput();
@@ -1537,7 +1944,20 @@ export default function POSScanTablePage() {
 
       if (showShortcuts) return;
 
-      if (showClearConfirm || showHeldBillsModal || showHoldBillModal) return;
+      if (event.key === "Escape" && discountPopupItemId) {
+        event.preventDefault();
+        closeDiscountPopup();
+        return;
+      }
+
+      if (
+        showClearConfirm ||
+        showHeldBillsModal ||
+        showHoldBillModal ||
+        discountPopupItemId
+      ) {
+        return;
+      }
 
       if (event.key === "Escape") {
         event.preventDefault();
@@ -1567,7 +1987,16 @@ export default function POSScanTablePage() {
         return;
       }
 
-      if ((event.key === "+" || event.key === "=") && !isTypingOutsideScanner) {
+      if (event.key === "F8") {
+        event.preventDefault();
+        const itemId = getActiveScanItemId();
+        if (itemId) {
+          openDiscountPopup(itemId);
+        }
+        return;
+      }
+
+      if (isIncreaseQtyKey(event) && !isTypingOutsideScanner) {
         if (isScannerInput && barcodeBuffer.trim()) return;
         event.preventDefault();
         updateSelectedItemQty(1);
@@ -1575,7 +2004,7 @@ export default function POSScanTablePage() {
         return;
       }
 
-      if (event.key === "-" && !isTypingOutsideScanner) {
+      if (isDecreaseQtyKey(event) && !isTypingOutsideScanner) {
         if (isScannerInput && barcodeBuffer.trim()) return;
         event.preventDefault();
         updateSelectedItemQty(-1);
@@ -1607,6 +2036,7 @@ export default function POSScanTablePage() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
     barcodeBuffer,
+    discountPopupItemId,
     currentPage,
     focusScannerInput,
     scanItems,
@@ -1616,6 +2046,27 @@ export default function POSScanTablePage() {
     showHoldBillModal,
     showShortcuts,
   ]);
+
+  useEffect(() => {
+    if (!discountPopupItemId) return;
+
+    const timer = setTimeout(() => {
+      discountInputRef.current?.focus();
+      discountInputRef.current?.select();
+    }, 50);
+
+    return () => clearTimeout(timer);
+  }, [discountPopupItemId]);
+
+  useEffect(() => {
+    if (
+      discountPopupItemId &&
+      !scanItems.some((item) => item.id === discountPopupItemId)
+    ) {
+      setDiscountPopupItemId(null);
+      setDiscountInputValue("");
+    }
+  }, [discountPopupItemId, scanItems]);
 
   useEffect(() => {
     if (currentPage !== "pos" || !isBarcodeScannerEnabled) return;
@@ -1669,7 +2120,7 @@ export default function POSScanTablePage() {
                   <button
                     key={`${getScannedProductId(product)}-${product.barcode ?? ""}`}
                     type="button"
-                    onClick={() => selectSearchedProduct(product)}
+                    onClick={() => void selectSearchedProduct(product)}
                     className="flex w-full items-center justify-between gap-4 rounded-lg px-3 py-3 text-left transition hover:bg-blue-50"
                   >
                     <div className="min-w-0">
@@ -1770,7 +2221,9 @@ export default function POSScanTablePage() {
         </div>
         <div className="min-w-0 text-center">
           <div className="mb-1 text-xs font-semibold text-gray-500">ส่วนลด</div>
-          <div className="text-xl font-bold text-blue-700">0.00</div>
+          <div className="text-xl font-bold text-blue-700">
+            {formatPrice(discountAmount)}
+          </div>
         </div>
         <div className="min-w-0 text-center">
           <div className="mb-1 text-xs font-semibold text-gray-500">
@@ -1820,7 +2273,7 @@ export default function POSScanTablePage() {
 
       <div className="min-h-0 flex-1 overflow-hidden px-4 pb-0 pt-4 xl:px-6 xl:pt-5">
         <div className="h-full overflow-auto rounded-2xl border border-gray-300 bg-white">
-          <table className="min-w-[980px] w-full border-separate border-spacing-0 overflow-hidden bg-white">
+          <table className="min-w-[1200px] w-full border-separate border-spacing-0 overflow-hidden bg-white">
             <thead>
               <tr className="bg-blue-50">
                 <th className="border-b border-gray-300 px-4 py-3 text-center text-xs font-bold tracking-wider text-gray-500">
@@ -1835,20 +2288,26 @@ export default function POSScanTablePage() {
                 <th className="border-b border-gray-300 px-4 py-3 text-center text-xs font-bold tracking-wider text-gray-500">
                   จำนวน
                 </th>
-                <th className="border-b border-gray-300 px-4 py-3 text-right text-xs font-bold tracking-wider text-gray-500">
+                <th className="w-[120px] border-b border-gray-300 px-4 py-3 text-center text-xs font-bold tracking-wider text-gray-500">
+                  หน่วย
+                </th>
+                <th className="w-[150px] border-b border-gray-300 px-4 py-3 text-center text-xs font-bold tracking-wider text-gray-500">
                   ราคา/หน่วย
                 </th>
-                <th className="border-b border-gray-300 px-4 py-3 text-right text-xs font-bold tracking-wider text-gray-500">
+                <th className="w-[150px] border-b border-gray-300 px-4 py-3 text-center text-xs font-bold tracking-wider text-gray-500">
+                  ส่วนลด
+                </th>
+                <th className="w-[150px] border-b border-gray-300 px-4 py-3 text-center text-xs font-bold tracking-wider text-gray-500">
                   ยอดรวม
                 </th>
-                <th className="border-b border-gray-300 px-4 py-3 text-center text-xs font-bold tracking-wider text-gray-500" />
+                <th className="w-[72px] border-b border-gray-300 px-4 py-3 text-center text-xs font-bold tracking-wider text-gray-500" />
               </tr>
             </thead>
             <tbody>
               {scanItems.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={9}
                     className="border-b border-gray-300 px-4 py-16 text-center text-lg text-slate-400"
                   >
                     ยังไม่มีสินค้าในรายการ สแกนบาร์โค้ดเพื่อเพิ่มสินค้า
@@ -1858,6 +2317,18 @@ export default function POSScanTablePage() {
               {scanItems.map((item, index) => {
                 const isSelected = selectedScanItemId === item.id;
                 const itemImageUrl = scanItemImageUrls[item.id];
+                const lineDiscount =
+                  Number(item.discount ?? item.discount_amount ?? 0) || 0;
+                const lineTotal = item.price * item.qty;
+                const lineNetTotal = Math.max(lineTotal - lineDiscount, 0);
+                const unitLabel =
+                  item.unitNameTh?.trim() ||
+                  item.unit_name_th?.trim() ||
+                  item.unitName?.trim() ||
+                  item.unit_name?.trim() ||
+                  item.unit_code?.trim() ||
+                  item.unit?.trim() ||
+                  "ชิ้น";
 
                 return (
                 <tr
@@ -1870,7 +2341,7 @@ export default function POSScanTablePage() {
                     isSelected ? "bg-blue-50 ring-1 ring-inset ring-blue-200" : "hover:bg-blue-50"
                   }`}
                 >
-                  <td className="border-b border-gray-300 px-4 py-4 text-center">
+                  <td className="w-[110px] border-b border-gray-300 px-4 py-4 text-center">
                     <span
                       className={`inline-flex h-8 min-w-8 items-center justify-center rounded-lg px-2 text-sm font-bold ${
                         isSelected ? "bg-blue-600 text-white" : "bg-blue-50 text-blue-700"
@@ -1911,8 +2382,10 @@ export default function POSScanTablePage() {
                           focusScannerInput();
                         }}
                         className="flex h-[26px] w-[26px] items-center justify-center rounded-lg bg-blue-100 text-lg font-bold text-blue-600 hover:bg-blue-200"
+                        title="ลดจำนวน"
+                        aria-label="ลดจำนวน"
                       >
-                        -
+                        <IconMinus size={15} />
                       </button>
                       <span className="min-w-[18px] text-center font-bold">
                         {item.qty}
@@ -1926,18 +2399,62 @@ export default function POSScanTablePage() {
                           focusScannerInput();
                         }}
                         className="flex h-[26px] w-[26px] items-center justify-center rounded-lg bg-blue-100 text-lg font-bold text-blue-600 hover:bg-blue-200"
+                        title="เพิ่มจำนวน"
+                        aria-label="เพิ่มจำนวน"
                       >
-                        +
+                        <IconPlus size={15} />
                       </button>
                     </div>
                   </td>
-                  <td className="border-b border-gray-300 px-4 py-4 text-right text-lg font-semibold">
+                  <td className="w-[120px] border-b border-gray-300 px-4 py-4 text-center">
+                    <span className="inline-flex min-w-16 justify-center rounded-lg bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700">
+                      {unitLabel}
+                    </span>
+                  </td>
+                  <td className="w-[150px] border-b border-gray-300 px-4 py-4 text-center text-lg font-semibold">
                     {formatPrice(item.price)}
                   </td>
-                  <td className="border-b border-gray-300 px-4 py-4 text-right font-bold text-lg text-blue-700">
-                    {formatPrice(item.price * item.qty)}
+                  <td className="w-[150px] border-b border-gray-300 px-4 py-4">
+                    <div className="relative flex items-center justify-center">
+                    {item.allow_discount && lineDiscount > 0 ? (
+                      <div className="font-bold text-emerald-600">
+                        -{formatPrice(lineDiscount)}
+                      </div>
+                    ) : (
+                      <div className="text-slate-400">0.00</div>
+                    )}
+                    {item.allow_discount ? (
+                      <button
+                        type="button"
+                        title={
+                          lineDiscount > 0
+                            ? "แก้ไขส่วนลดรายการนี้"
+                            : "ใส่ส่วนลดรายการนี้"
+                        }
+                        aria-label={
+                          lineDiscount > 0
+                            ? "แก้ไขส่วนลดรายการนี้"
+                            : "ใส่ส่วนลดรายการนี้"
+                        }
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openDiscountPopup(item.id);
+                        }}
+                        className={`absolute left-[calc(50%+22px)] inline-flex h-7 w-7 items-center justify-center rounded-lg border-none align-middle transition ${
+                          lineDiscount > 0
+                            ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                            : "bg-transparent text-gray-300 hover:bg-blue-50 hover:text-blue-600"
+                        }`}
+                      >
+                        <IconPencil size={15} />
+                      </button>
+                    ) : null}
+                    </div>
                   </td>
-                  <td className="border-b border-gray-300 px-4 py-4 text-center">
+                  <td className="w-[150px] border-b border-gray-300 px-4 py-4 text-center font-bold text-lg text-blue-700">
+                    <div>{formatPrice(lineNetTotal)}</div>
+                  </td>
+                  <td className="w-[72px] border-b border-gray-300 px-4 py-4 text-center">
                     <button
                       type="button"
                       title="ลบสินค้าที่เลือก"
@@ -1948,7 +2465,7 @@ export default function POSScanTablePage() {
                         removeItem(item.id);
                         focusScannerInput();
                       }}
-                      className="flex h-7 w-7 items-center justify-center rounded-lg border-none bg-transparent text-base text-gray-300 hover:bg-red-50 hover:text-red-600"
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-lg border-none bg-transparent align-middle text-base text-gray-300 hover:bg-red-50 hover:text-red-600"
                     >
                       ×
                     </button>
@@ -2088,8 +2605,8 @@ export default function POSScanTablePage() {
     return (
       <POSPayment
         cartItems={scanItems}
-        subtotal={totalAmount}
-        discount={0}
+        subtotal={subTotal}
+        discount={discountAmount}
         total={totalAmount}
         onBack={() => setCurrentPage("pos")}
         onPaymentComplete={() => {
@@ -2549,6 +3066,20 @@ export default function POSScanTablePage() {
           onClose={closeCustomerPopup}
           onRefresh={fetchCustomerList}
           onSelectCustomer={selectCustomer}
+        />
+      ) : null}
+
+      {discountPopupItemId && discountPopupItem ? (
+        <DiscountPopup
+          item={discountPopupItem}
+          value={discountInputValue}
+          inputRef={discountInputRef}
+          formatBaht={(value) => `฿${formatPrice(value)}`}
+          onChange={setDiscountInputValue}
+          onClose={closeDiscountPopup}
+          onConfirm={confirmDiscountPopup}
+          isLoading={isCheckingDiscount}
+          errorMessage={discountPopupError}
         />
       ) : null}
 

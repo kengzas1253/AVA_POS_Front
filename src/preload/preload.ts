@@ -3,6 +3,9 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld("electronAPI", {
   getAppVersion: (): Promise<string> => ipcRenderer.invoke("app:get-version"),
   quitApp: (): Promise<boolean> => ipcRenderer.invoke("app:quit"),
+  getAutoLaunch: (): Promise<boolean> => ipcRenderer.invoke("app:get-auto-launch"),
+  setAutoLaunch: (enable: boolean): Promise<boolean> =>
+    ipcRenderer.invoke("app:set-auto-launch", enable),
 });
 
 contextBridge.exposeInMainWorld("electronStore", {

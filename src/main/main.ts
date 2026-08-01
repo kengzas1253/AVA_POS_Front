@@ -99,6 +99,19 @@ app.whenReady().then(async () => {
     return true;
   });
 
+  ipcMain.handle("app:get-auto-launch", () => {
+    return app.getLoginItemSettings().openAtLogin;
+  });
+
+  ipcMain.handle("app:set-auto-launch", (_event, enable: boolean) => {
+    app.setLoginItemSettings({
+      openAtLogin: enable,
+      path: process.execPath,
+    });
+
+    return app.getLoginItemSettings().openAtLogin === enable;
+  });
+
   ipcMain.handle("electron-store-get", (_event, key: string) => {
     return store.get(key);
   });

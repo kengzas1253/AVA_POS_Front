@@ -6,6 +6,8 @@ export interface PosMachineSettings {
   machine_id?: string;
   allowBelowCost?: boolean;
   allow_below_cost?: boolean;
+  shiftEnabled?: boolean;
+  shift_enabled?: boolean;
   minProfitAmount?: string | number | null;
   min_profit_amount?: string | number | null;
 }
@@ -13,11 +15,13 @@ export interface PosMachineSettings {
 export interface UpdatePosMachineSettingsPayload {
   machine_id: string;
   allowBelowCost: boolean;
+  shiftEnabled: boolean;
   minProfitAmount: number;
 }
 
 const toApiPayload = (payload: UpdatePosMachineSettingsPayload) => ({
   allow_below_cost: payload.allowBelowCost,
+  shift_enabled: payload.shiftEnabled,
   min_profit_amount: payload.minProfitAmount,
 });
 

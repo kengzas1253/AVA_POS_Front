@@ -5,6 +5,8 @@ declare global {
     electronAPI: {
       getAppVersion: () => Promise<string>;
       quitApp: () => Promise<boolean>;
+      getAutoLaunch?: () => Promise<boolean>;
+      setAutoLaunch?: (enable: boolean) => Promise<boolean>;
     };
     electronStore: {
       get: (key: string) => Promise<any>;

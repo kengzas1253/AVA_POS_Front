@@ -61,8 +61,16 @@ import {
 } from "./FavoriteItems";
 import { UserInfoPage } from "./UserInfoPage";
 import { ensureValidAccessToken, refreshAccessToken } from "./auth";
-import { normalizeBarcode } from "./BarcodeNormalizer";
+import {
+  normalizeBarcode,
+  normalizeBarcodeScannerKey,
+} from "./BarcodeNormalizer";
 import { usePosScanSound } from "./usePosScanSound";
+import {
+  calculateAutoPackCart,
+  SELECTED_POS_CUSTOMER_KEY,
+  type AutoPackPricingScope,
+} from "./autoPackPricingService";
 
 interface CartItem {
   id?: number | string;
@@ -213,11 +221,6 @@ interface StoreSettingsResponse {
   data?: StoreSettings | StoreSettings[] | { store?: StoreSettings };
   store?: StoreSettings;
 }
-
-type AutoPackPricingScope =
-  | "DISABLED"
-  | "ALL_CUSTOMERS"
-  | "MEMBERS_ONLY";
 
 interface CustomersResponse {
   data?: PosCustomer[] | { customers?: PosCustomer[]; data?: PosCustomer[] };
@@ -426,7 +429,6 @@ const formatBaht = (value: number): string => `฿${value.toFixed(2)}`;
 // à¸à¸³à¸«à¸™à¸”à¹€à¸§à¸¥à¸²à¹ƒà¸™à¸à¸²à¸£à¸£à¸­à¸£à¸±à¸šà¸šà¸²à¸£à¹Œà¹‚à¸„à¹‰à¸”à¸ˆà¸²à¸à¹€à¸„à¸£à¸·à¹ˆà¸­à¸‡à¸ªà¹à¸น (หน่วย: มิลลิวินาที)
 //const BARCODE_INPUT_TIMEOUT_MS = 5000;
 const BARCODE_INPUT_TIMEOUT_MS = 300;
-const SELECTED_POS_CUSTOMER_KEY = "pos_selected_customer";
 const BARCODE_NOT_FOUND_MESSAGE = "ไม่พบบาร์โค้ดสินค้า";
 const BARCODE_SCAN_FAILED_MESSAGE =
   "à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸•à¸£à¸§à¸ˆà¸ªà¸­à¸šà¸šà¸²à¸£à¹Œà¹‚à¸„à¹‰à¸”à¹„à¸”à¹‰ à¸à¸£à¸¸à¸“à¸²à¸¥à¸­à¸‡à¹ƒà¸«à¸¡à¹ˆà¸­à¸µà¸ครั้ง";
@@ -2278,16 +2280,22 @@ export default function PosLandingPages() {
     nextSourceItems: CartItem[],
     options: { selectedName?: string | null; focus?: boolean } = {},
   ): Promise<boolean> => {
-    const storedDevice = await window.electronStore.get("pos_device");
+    const autoPackResult = await calculateAutoPackCart(nextSourceItems);
     const autoPackPricingScope = normalizeAutoPackPricingScope(
-      storeSettings.auto_pack_pricing_scope,
+      autoPackResult.settings.auto_pack_pricing_scope,
     );
-    const shouldAutoConvert =
-      autoPackPricingScope === "ALL_CUSTOMERS" ||
-      (autoPackPricingScope === "MEMBERS_ONLY" && Boolean(selectedCustomer));
-    setAutoConvertUnitPrice(shouldAutoConvert);
+    setStoreSettings((currentSettings) => ({
+      ...currentSettings,
+      ...autoPackResult.settings,
+      vat_rate: Number(autoPackResult.settings.vat_rate ?? currentSettings.vat_rate) || 0,
+      vat_enabled: Boolean(
+        autoPackResult.settings.vat_enabled ?? currentSettings.vat_enabled,
+      ),
+      auto_pack_pricing_scope: autoPackPricingScope,
+    }));
+    setAutoConvertUnitPrice(autoPackResult.enabled);
 
-    if (!shouldAutoConvert) {
+    if (!autoPackResult.enabled) {
       sourceCartRef.current = nextSourceItems;
       cartRef.current = nextSourceItems;
       setSourceCart(nextSourceItems);
@@ -2320,73 +2328,18 @@ export default function PosLandingPages() {
       return true;
     }
 
-    const machineId = getStoredMachineId(storedDevice);
-    if (!machineId) {
-      setScanMessage("ไม่พบ machine_id à¸รุณาลงทะเบียนเครื่อง POS à¸่อน");
-      return false;
-    }
-
     setPromotionLoading(true);
     setPromotionError(null);
     try {
       sourceCartRef.current = nextSourceItems;
       setSourceCart(nextSourceItems);
-      console.log("Source cart before calculate:", nextSourceItems);
-      const calculableItems = nextSourceItems.filter(
-        (item) => getCalculableProductUnitId(item) != null,
-      );
-      const uncalculableItems = nextSourceItems.filter(
-        (item) => getCalculableProductUnitId(item) == null,
-      );
-
-      if (!calculableItems.length) {
-        const fallbackTotal = nextSourceItems.reduce(
-          (sum, item) =>
-            sum + (Number(item.total_amount ?? item.final_price ?? item.price * item.qty) || 0),
-          0,
-        );
-        const promotionResult = await calculateCartPromotions(nextSourceItems);
-        const promotionItems = applyCalculatedPromotionsToCartItems(
-          nextSourceItems,
-          promotionResult.items ?? [],
-        );
-
-        cartRef.current = promotionItems;
-        setCart(promotionItems);
-        setPromotionSubtotal(Number(promotionResult.subtotal ?? fallbackTotal) || 0);
-        setDiscountTotal(Number(promotionResult.discount_total ?? 0) || 0);
-        setGrandTotal(Number(promotionResult.grand_total ?? fallbackTotal) || 0);
-        setAppliedPromotions(promotionResult.applied_promotions ?? []);
-        if (options.selectedName !== undefined) {
-          setSelectedCartItemName(options.selectedName);
-        }
-        if (options.focus !== false) {
-          focusBarcodeInput();
-        }
-        return true;
-      }
-
-      const result = await calculateCartUnitPrices(machineId, calculableItems);
-      console.log("calculate-cart response", result);
-      console.log("cart before update", cartRef.current);
-      const updatedItems = [
-        ...mapCalculatedCartItems(calculableItems, getCalculateCartItems(result)),
-        ...uncalculableItems,
-      ];
+      const updatedItems = autoPackResult.items;
       console.log("cart after update", updatedItems);
-      const uncalculableTotal = uncalculableItems.reduce(
-        (sum, item) =>
-          sum + (Number(item.total_amount ?? item.final_price ?? item.price * item.qty) || 0),
-        0,
-      );
       const fallbackSubtotal = updatedItems.reduce(
         (sum, item) =>
           sum + (Number(item.total_amount ?? item.final_price ?? item.price * item.qty) || 0),
         0,
       );
-      const calculateCartSubtotal =
-        getCalculateCartSubtotal(result, fallbackSubtotal - uncalculableTotal) +
-        uncalculableTotal;
       const promotionResult = await calculateCartPromotions(updatedItems);
       const promotionItems = applyCalculatedPromotionsToCartItems(
         updatedItems,
@@ -2395,14 +2348,10 @@ export default function PosLandingPages() {
 
       cartRef.current = promotionItems;
       setCart(promotionItems);
-      setPromotionSubtotal(Number(promotionResult.subtotal ?? calculateCartSubtotal) || 0);
-      setDiscountTotal(Number(promotionResult.discount_total ?? getCalculateCartDiscountTotal(result)) || 0);
+      setPromotionSubtotal(Number(promotionResult.subtotal ?? fallbackSubtotal) || 0);
+      setDiscountTotal(Number(promotionResult.discount_total ?? 0) || 0);
       setGrandTotal(
-        Number(
-          promotionResult.grand_total ??
-            getCalculateCartGrandTotal(result, fallbackSubtotal - uncalculableTotal) +
-              uncalculableTotal,
-        ) || 0,
+        Number(promotionResult.grand_total ?? fallbackSubtotal) || 0,
       );
       setAppliedPromotions(promotionResult.applied_promotions ?? []);
       if (options.selectedName !== undefined) {
@@ -3191,14 +3140,39 @@ export default function PosLandingPages() {
     setCustomerLoadError(null);
   };
 
+  const recalculateCartForCustomerChange = () => {
+    void commitCartChange(sourceCartRef.current, {
+      selectedName: selectedCartItemName,
+      focus: false,
+    }).catch((error) => {
+      console.error("Recalculate cart after customer change error:", error);
+      setScanMessage(
+        error instanceof Error && error.message
+          ? error.message
+          : "ไม่สามารถคำนวณราคาแพ็คหลังเปลี่ยนสมาชิกได้",
+      );
+    });
+  };
+
   const clearSelectedCustomer = () => {
     setSelectedCustomer(null);
-    void window.electronStore.set(SELECTED_POS_CUSTOMER_KEY, null);
+    void window.electronStore
+      .set(SELECTED_POS_CUSTOMER_KEY, null)
+      .then(recalculateCartForCustomerChange)
+      .catch((error) => {
+        console.error("Clear selected customer error:", error);
+      });
   };
 
   const selectCustomer = (customer: PosCustomer) => {
     setSelectedCustomer(customer);
-    void window.electronStore.set(SELECTED_POS_CUSTOMER_KEY, customer);
+    void window.electronStore
+      .set(SELECTED_POS_CUSTOMER_KEY, customer)
+      .then(recalculateCartForCustomerChange)
+      .catch((error) => {
+        console.error("Select customer error:", error);
+        setScanMessage("ไม่สามารถบันทึกสมาชิกที่เลือกได้");
+      });
     closeCustomerPopup();
   };
 
@@ -3513,7 +3487,7 @@ export default function PosLandingPages() {
     }
 
     event.preventDefault();
-    barcodeBufferRef.current += event.key;
+    barcodeBufferRef.current += normalizeBarcodeScannerKey(event.key);
     setBarcodeBuffer(barcodeBufferRef.current);
 
     if (barcodeTimerRef.current) {
@@ -3647,6 +3621,9 @@ export default function PosLandingPages() {
         "id" in storedCustomer
       ) {
         setSelectedCustomer(storedCustomer as PosCustomer);
+        if (sourceCartRef.current.length > 0) {
+          recalculateCartForCustomerChange();
+        }
       }
     };
 
@@ -3763,11 +3740,13 @@ export default function PosLandingPages() {
 
   useEffect(() => {
     const handleScannerKeyboard = (event: KeyboardEvent) => {
+      const isBarcodeScannerInput = event.target === barcodeInputRef.current;
       const isTyping = isEditableKeyboardTarget(event.target);
 
       if (
         currentPage !== "pos" ||
-        isTyping ||
+        isBarcodeScannerInput ||
+        (isTyping && !isBarcodeScannerInput) ||
         showClearConfirm ||
         showShortcuts ||
         showCustomerPopup ||
@@ -3830,7 +3809,7 @@ export default function PosLandingPages() {
 
       event.preventDefault();
       event.stopImmediatePropagation();
-      barcodeBufferRef.current += event.key;
+      barcodeBufferRef.current += normalizeBarcodeScannerKey(event.key);
       setBarcodeBuffer(barcodeBufferRef.current);
 
       if (barcodeTimerRef.current) {
@@ -4039,6 +4018,7 @@ export default function PosLandingPages() {
       }
 
       if (event.key === "+" || event.key === "=") {
+        if (isBarcodeScannerInput && barcodeBuffer.trim()) return;
         event.preventDefault();
         if (selectedCartItemName) {
           changeQty(selectedCartItemName, 1);
@@ -4047,6 +4027,7 @@ export default function PosLandingPages() {
       }
 
       if (event.key === "-" || event.key === "_") {
+        if (isBarcodeScannerInput && barcodeBuffer.trim()) return;
         event.preventDefault();
         if (selectedCartItemName) {
           changeQty(selectedCartItemName, -1);
@@ -4061,6 +4042,7 @@ export default function PosLandingPages() {
     };
   }, [
     cart,
+    barcodeBuffer,
     currentPage,
     pendingScanInput,
     discountPopupItemName,
@@ -4561,6 +4543,10 @@ export default function PosLandingPages() {
                       const pricingBreakdown = item.pricingBreakdown ?? [];
                       const storedNetTotal =
                         Number(item.total_amount ?? item.final_price) || 0;
+                      const breakdownNetTotal =
+                        pricingBreakdown.length === 1
+                          ? getBreakdownTotalAmount(pricingBreakdown[0])
+                          : 0;
                       const lineTotal =
                         Number(item.regularAmount) ||
                         (storedNetTotal > 0 &&
@@ -4578,7 +4564,9 @@ export default function PosLandingPages() {
                         lineTotal,
                       );
                       const lineNetTotal =
-                        storedNetTotal > 0
+                        breakdownNetTotal > 0
+                          ? breakdownNetTotal
+                          : storedNetTotal > 0
                           ? storedNetTotal
                           : Math.max(lineTotal - lineDiscount, 0);
 

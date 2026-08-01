@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   IconBox,
   IconChevronDown,
@@ -11,6 +18,7 @@ import {
   IconX,
 } from "@tabler/icons-react";
 import { ensureValidAccessToken, refreshAccessToken } from "./auth";
+import { normalizeBarcode } from "./BarcodeNormalizer";
 
 export interface ProductCategory {
   id: number | string;
@@ -123,6 +131,10 @@ interface FavoriteItemsProps {
 }
 
 type ListResponse<T> = T[] | { data?: T[] };
+
+const SCANNER_FAST_INPUT_MS = 45;
+const SCANNER_MIN_FAST_CHARS = 6;
+const SCANNER_BULK_INPUT_CHARS = 4;
 
 interface PaginatedProductsResponse {
   data: FavoriteProduct[];
@@ -712,6 +724,19 @@ export default function FavoriteItems({
   const [deletingItem, setDeletingItem] = useState<FavoriteItem | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const productsLoadingRef = useRef(false);
+  const scannerInputRef = useRef({
+    lastValue: "",
+    lastInputAt: 0,
+    fastCharCount: 0,
+  });
+
+  const resetScannerInputTracker = () => {
+    scannerInputRef.current = {
+      lastValue: "",
+      lastInputAt: 0,
+      fastCharCount: 0,
+    };
+  };
 
   const fetchProductDetail = async (
     productId: number | string,
@@ -858,6 +883,7 @@ export default function FavoriteItems({
     setHasMore(true);
     setSearchQuery("");
     setDebouncedSearch("");
+    resetScannerInputTracker();
     setPickerError(null);
     setIsPickerOpen(true);
 
@@ -891,6 +917,33 @@ export default function FavoriteItems({
     setIsPickerOpen(false);
     setEditingItem(null);
     setPickerError(null);
+    resetScannerInputTracker();
+  };
+
+  const handleSearchQueryChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const nextValue = event.target.value;
+    const now = performance.now();
+    const tracker = scannerInputRef.current;
+    const addedCharCount = Math.max(nextValue.length - tracker.lastValue.length, 0);
+    const isContinuousTyping =
+      addedCharCount > 0 &&
+      tracker.lastInputAt > 0 &&
+      now - tracker.lastInputAt <= SCANNER_FAST_INPUT_MS;
+
+    const fastCharCount = isContinuousTyping
+      ? tracker.fastCharCount + addedCharCount
+      : addedCharCount;
+    const isScannerInput =
+      addedCharCount >= SCANNER_BULK_INPUT_CHARS ||
+      fastCharCount >= SCANNER_MIN_FAST_CHARS;
+    const nextSearchQuery = isScannerInput ? normalizeBarcode(nextValue) : nextValue;
+
+    scannerInputRef.current = {
+      lastValue: nextSearchQuery,
+      lastInputAt: now,
+      fastCharCount,
+    };
+    setSearchQuery(nextSearchQuery);
   };
 
   useEffect(() => {
@@ -1145,7 +1198,7 @@ export default function FavoriteItems({
               />
               <input
                 value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
+                onChange={handleSearchQueryChange}
                 placeholder="ค้นหาชื่อสินค้า, SKU หรือบาร์โค้ด"
                 className="h-10 w-full rounded-xl border border-slate-200 pl-9 pr-3 text-sm outline-none focus:border-[#1d6fd8]"
               />

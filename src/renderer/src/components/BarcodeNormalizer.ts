@@ -99,6 +99,14 @@ const thToEnMap: Record<string, string> = {
 // ช่วงยูนิโค้ดของอักขระไทย (รวมวรรณยุกต์/สระ) ใช้เช็คว่าข้อความมีตัวไทยปนอยู่จริงหรือไม่
 const THAI_CHAR_PATTERN = /[\u0E00-\u0E7F]/;
 
+export function normalizeBarcodeScannerKey(input: string): string {
+  return input
+    .split("")
+    .map((ch) => thToEnMap[ch] ?? ch)
+    .join("")
+    .toUpperCase();
+}
+
 export function normalizeBarcode(input: string): string {
   const trimmed = input.trim();
 

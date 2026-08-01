@@ -4,6 +4,8 @@ import {
   IconCopy,
   IconDeviceDesktop,
   IconDeviceFloppy,
+  IconLoader2,
+  IconPower,
   IconRefresh,
   IconSettings,
   IconShieldCheck,
@@ -30,6 +32,10 @@ import {
   type PosLayoutMode,
 } from "./posLayoutMode";
 import POSScanSoundSetting from "./POSScanSoundSetting";
+import {
+  loadAutoLaunchSetting,
+  saveAutoLaunchSetting,
+} from "./autoLaunchSettingService";
 
 type TabId = "current" | "all";
 
@@ -83,9 +89,11 @@ const syncDeviceNameToStore = async (deviceName: string) => {
 
 const syncMachineSettingsToStore = async ({
   allowBelowCost,
+  shiftEnabled,
   minProfitAmount,
 }: {
   allowBelowCost: boolean;
+  shiftEnabled: boolean;
   minProfitAmount: number;
 }) => {
   const stored = await window.electronStore.get(POS_DEVICE_KEY);
@@ -93,6 +101,7 @@ const syncMachineSettingsToStore = async ({
 
   const settingsPayload = {
     allow_below_cost: allowBelowCost,
+    shift_enabled: shiftEnabled,
     min_profit_amount: minProfitAmount,
   };
   const root = stored as StoredPosDevice;
@@ -141,8 +150,13 @@ export default function POSSettingPage() {
   const [settings, setSettings] = useState<PosMachineSettings | null>(null);
   const [deviceName, setDeviceName] = useState("");
   const [allowBelowCost, setAllowBelowCost] = useState(false);
+  const [shiftEnabled, setShiftEnabled] = useState(false);
   const [minProfitAmount, setMinProfitAmount] = useState("0.00");
   const [posLayoutMode, setPosLayoutMode] = useState<PosLayoutMode>("STANDARD");
+  const [autoLaunch, setAutoLaunch] = useState(false);
+  const [autoLaunchLoading, setAutoLaunchLoading] = useState(true);
+  const [autoLaunchSaving, setAutoLaunchSaving] = useState(false);
+  const [autoLaunchSupported, setAutoLaunchSupported] = useState(true);
   const [allDevices, setAllDevices] = useState<PosDevice[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
   const [allLoading, setAllLoading] = useState(false);
@@ -151,6 +165,7 @@ export default function POSSettingPage() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [deviceNameError, setDeviceNameError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [autoLaunchError, setAutoLaunchError] = useState<string | null>(null);
   const [savingDevice, setSavingDevice] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [savingPosLayoutMode, setSavingPosLayoutMode] = useState(false);
@@ -202,6 +217,9 @@ export default function POSSettingPage() {
       setAllowBelowCost(
         Boolean(machineSettings?.allowBelowCost ?? machineSettings?.allow_below_cost),
       );
+      setShiftEnabled(
+        Boolean(machineSettings?.shiftEnabled ?? machineSettings?.shift_enabled),
+      );
       setMinProfitAmount(
         String(machineSettings?.minProfitAmount ?? machineSettings?.min_profit_amount ?? "0.00"),
       );
@@ -213,6 +231,31 @@ export default function POSSettingPage() {
       );
     } finally {
       setInitialLoading(false);
+    }
+  }, []);
+
+  const loadAutoLaunch = useCallback(async () => {
+    setAutoLaunchLoading(true);
+    setAutoLaunchError(null);
+
+    const canUseAutoLaunch =
+      typeof window.electronAPI.getAutoLaunch === "function" &&
+      typeof window.electronAPI.setAutoLaunch === "function";
+    setAutoLaunchSupported(canUseAutoLaunch);
+
+    try {
+      const storedAutoLaunch = await loadAutoLaunchSetting();
+      setAutoLaunch(storedAutoLaunch);
+
+      if (!canUseAutoLaunch) {
+        setAutoLaunchError("อุปกรณ์นี้ไม่รองรับการตั้งค่า Auto Launch");
+      }
+    } catch (error) {
+      console.error("Error loading auto launch setting:", error);
+      setAutoLaunch(false);
+      setAutoLaunchError("ไม่สามารถโหลดการตั้งค่า Auto Launch ได้");
+    } finally {
+      setAutoLaunchLoading(false);
     }
   }, []);
 
@@ -237,7 +280,8 @@ export default function POSSettingPage() {
     if (initialLoadStartedRef.current) return;
     initialLoadStartedRef.current = true;
     void loadCurrent();
-  }, [loadCurrent]);
+    void loadAutoLaunch();
+  }, [loadAutoLaunch, loadCurrent]);
 
   useEffect(() => {
     if (activeTab === "all" && machineId) {
@@ -292,6 +336,7 @@ export default function POSSettingPage() {
       const payload = {
         machine_id: machineId,
         allowBelowCost,
+        shiftEnabled,
         minProfitAmount: Number(minProfitAmount),
       };
       const existingSettings = settings ?? (await getPosMachineSettings(machineId));
@@ -303,15 +348,20 @@ export default function POSSettingPage() {
       const savedAllowBelowCost = Boolean(
         savedSettings.allowBelowCost ?? savedSettings.allow_below_cost,
       );
+      const savedShiftEnabled = Boolean(
+        savedSettings.shiftEnabled ?? savedSettings.shift_enabled ?? payload.shiftEnabled,
+      );
       const savedMinProfitAmount = Number(
         savedSettings.minProfitAmount ??
           savedSettings.min_profit_amount ??
           payload.minProfitAmount,
       );
       setAllowBelowCost(savedAllowBelowCost);
+      setShiftEnabled(savedShiftEnabled);
       setMinProfitAmount(String(savedMinProfitAmount));
       await syncMachineSettingsToStore({
         allowBelowCost: savedAllowBelowCost,
+        shiftEnabled: savedShiftEnabled,
         minProfitAmount: savedMinProfitAmount,
       });
       setSuccessMessage("บันทึกการตั้งค่าเรียบร้อยแล้ว");
@@ -347,6 +397,43 @@ export default function POSSettingPage() {
     }
   };
 
+  const saveAutoLaunch = async (enable: boolean) => {
+    if (autoLaunchSaving || !autoLaunchSupported) return;
+
+    const previousAutoLaunch = autoLaunch;
+    const setAutoLaunchApi = window.electronAPI.setAutoLaunch;
+    if (!setAutoLaunchApi) {
+      setAutoLaunchSupported(false);
+      setAutoLaunchError("อุปกรณ์นี้ไม่รองรับการตั้งค่า Auto Launch");
+      return;
+    }
+
+    setAutoLaunch(enable);
+    setAutoLaunchSaving(true);
+    setAutoLaunchError(null);
+    setSuccessMessage(null);
+
+    try {
+      const success = await setAutoLaunchApi(enable);
+      if (!success) {
+        throw new Error("ไม่สามารถเปลี่ยนการตั้งค่า Auto Launch ได้");
+      }
+
+      await saveAutoLaunchSetting(enable);
+      setSuccessMessage("บันทึกการตั้งค่าเรียบร้อย");
+    } catch (error) {
+      console.error("Error saving auto launch setting:", error);
+      setAutoLaunch(previousAutoLaunch);
+      setAutoLaunchError(
+        error instanceof Error && error.message
+          ? error.message
+          : "ไม่สามารถบันทึกการตั้งค่า Auto Launch ได้",
+      );
+    } finally {
+      setAutoLaunchSaving(false);
+    }
+  };
+
   const tabs = [
     { id: "current" as const, label: "เครื่อง POS ปัจจุบัน" },
     { id: "all" as const, label: "POS ทั้งหมด" },
@@ -375,6 +462,13 @@ export default function POSSettingPage() {
         <div className="mb-4 flex items-center gap-2 rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
           <IconCheck size={18} />
           {successMessage}
+        </div>
+      ) : null}
+
+      {autoLaunchError ? (
+        <div className="mb-4 flex items-center gap-2 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">
+          <IconX size={18} />
+          {autoLaunchError}
         </div>
       ) : null}
 
@@ -500,9 +594,61 @@ export default function POSSettingPage() {
 
               <section className="rounded-xl border border-slate-200 p-4">
                 <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-slate-700">
+                  <IconPower size={18} className="text-[#1d6fd8]" />
+                  การเริ่มต้นโปรแกรม
+                </div>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-slate-700">
+                      เปิด AVA MY POS อัตโนมัติเมื่อเปิด Windows
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-slate-400">
+                      เมื่อเปิดเครื่อง โปรแกรมจะเปิดอัตโนมัติหลังผู้ใช้เข้าสู่ Windows
+                    </p>
+                    {autoLaunchLoading ? (
+                      <p className="mt-2 text-xs text-slate-400">กำลังโหลด...</p>
+                    ) : null}
+                    {!autoLaunchSupported ? (
+                      <p className="mt-2 text-xs text-red-500">
+                        อุปกรณ์นี้ไม่รองรับการตั้งค่า Auto Launch
+                      </p>
+                    ) : null}
+                  </div>
+                  <ToggleSwitch
+                    checked={autoLaunch}
+                    disabled={
+                      autoLaunchLoading || autoLaunchSaving || !autoLaunchSupported
+                    }
+                    loading={autoLaunchSaving}
+                    onChange={(checked) => void saveAutoLaunch(checked)}
+                  />
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-slate-200 p-4">
+                <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-slate-700">
                   <IconShieldCheck size={18} className="text-[#1d6fd8]" />
                   การแจ้งเตือนกำไรขั้นต่ำ
                 </div>
+                <label className="mb-4 flex items-start gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-3">
+                  <input
+                    type="checkbox"
+                    checked={shiftEnabled}
+                    onChange={(event) => {
+                      setShiftEnabled(event.target.checked);
+                      setSettingsError(null);
+                    }}
+                    className="mt-1 h-4 w-4 rounded border-slate-300 text-[#1d6fd8] focus:ring-[#1d6fd8]"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-slate-700">
+                      เปิดใช้งานกะ
+                    </span>
+                    <span className="mt-1 block text-xs text-slate-400">
+                      เมื่อเปิดใช้งาน ระบบจะใช้การทำงานแบบเปิด-ปิดกะสำหรับเครื่อง POS นี้
+                    </span>
+                  </span>
+                </label>
                 <label className="flex items-start gap-3">
                   <input
                     type="checkbox"
@@ -626,6 +772,39 @@ export default function POSSettingPage() {
 
       <div className="hidden">{currentDevice?.id}{settings?.id}</div>
     </div>
+  );
+}
+
+function ToggleSwitch({
+  checked,
+  disabled,
+  loading,
+  onChange,
+}: {
+  checked: boolean;
+  disabled: boolean;
+  loading: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative h-8 w-14 shrink-0 rounded-full transition ${
+        checked ? "bg-[#1d6fd8]" : "bg-slate-200"
+      } disabled:cursor-not-allowed disabled:opacity-60`}
+    >
+      <span
+        className={`absolute top-1 grid h-6 w-6 place-items-center rounded-full bg-white text-[#1d6fd8] shadow transition ${
+          checked ? "left-7" : "left-1"
+        }`}
+      >
+        {loading ? <IconLoader2 size={14} className="animate-spin" /> : null}
+      </span>
+    </button>
   );
 }
 
