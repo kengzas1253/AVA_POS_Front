@@ -1,4 +1,4 @@
-import {
+﻿import {
   useEffect,
   useMemo,
   useRef,
@@ -36,6 +36,7 @@ import PrintBarcode from "./PrintBarcode";
 import POSPayment from "./POSPayment";
 import DiscountPopup from "./DiscountPopup";
 import HeldBillsPopup from "./HeldBillsPopup";
+import KeyboardShortcutsPopup from "./KeyboardShortcutsPopup";
 import QuotationPage from "./QuotationPage";
 import ReceiptPage from "./ReceiptPage";
 import PrinterSetting from "./PrinterSetting";
@@ -93,7 +94,8 @@ interface CartItem {
   final_price?: number | string | null;
   total_amount?: number | string | null;
   track_stock?: boolean;
-  allow_discount?: boolean;
+  allow_discount?: boolean | number | string | null;
+  allowDiscount?: boolean | number | string | null;
   image_url?: string | null;
   note?: string;
   pricingBreakdown?: CalculateCartPricingBreakdown[];
@@ -131,26 +133,32 @@ interface ScannedProduct {
   stock_qty?: number;
   unit?: string;
   price_per_unit?: number;
-  allow_discount?: boolean;
+  allow_discount?: boolean | number | string | null;
+  allowDiscount?: boolean | number | string | null;
 }
 
 interface SearchedProduct {
-  product_id: number | string;
+  product_id?: number | string;
+  id?: number | string;
   barcode?: string | null;
   sku?: string | null;
-  name: string;
-  product_type: string;
+  name?: string;
+  product_name?: string;
+  product_type?: string;
   price_mode: "FIXED_PRICE" | "WEIGHT_PRICE" | "OPEN_PRICE" | "SERVICE_PRICE";
-  price: number;
+  price?: number | string | null;
+  sale_price?: number | string | null;
   track_stock?: boolean;
   stock_qty?: number;
-  allow_discount?: boolean;
+  allow_discount?: boolean | number | string | null;
+  allowDiscount?: boolean | number | string | null;
   image_url?: string | null;
   unit?: string | null;
+  unit_code?: string | null;
 }
 
 interface SearchProductResponse {
-  status: "success" | "not_found";
+  status?: "success" | "not_found";
   keyword?: string;
   total?: number;
   message?: string;
@@ -161,6 +169,13 @@ interface SearchProductResponse {
         products?: SearchedProduct[];
         data?: SearchedProduct[];
       };
+  pagination?: {
+    page?: number;
+    limit?: number;
+    total?: number;
+    totalPages?: number;
+    hasMore?: boolean;
+  };
 }
 
 interface ScanProductResponse {
@@ -195,7 +210,7 @@ interface StoreSettings {
 interface StoreSettingsResponse {
   status?: string;
   message?: string;
-  data?: StoreSettings | { store?: StoreSettings };
+  data?: StoreSettings | StoreSettings[] | { store?: StoreSettings };
   store?: StoreSettings;
 }
 
@@ -243,7 +258,8 @@ interface HeldBillItem {
   discount_amount?: number | string | null;
   total_amount?: number | string | null;
   track_stock?: boolean | null;
-  allow_discount?: boolean | null;
+  allow_discount?: boolean | number | string | null;
+  allowDiscount?: boolean | number | string | null;
   image_url?: string | null;
   note?: string | null;
 }
@@ -303,11 +319,18 @@ interface AppliedPromotion {
 }
 
 interface CalculatedPromotionItem {
-  product_id: number | string;
+  product_id?: number | string;
+  productId?: number | string;
+  barcode?: string | null;
   qty?: number | string | null;
   unit_price?: number | string | null;
+  unitPrice?: number | string | null;
   discount_amount?: number | string | null;
+  discountAmount?: number | string | null;
   final_price?: number | string | null;
+  finalPrice?: number | string | null;
+  total_amount?: number | string | null;
+  totalAmount?: number | string | null;
 }
 
 interface CalculatePromotionsResponse {
@@ -372,6 +395,8 @@ interface CalculateCartItem {
   saving_amount?: number | string | null;
   pricingBreakdown?: CalculateCartPricingBreakdown[];
   pricing_breakdown?: CalculateCartPricingBreakdown[];
+  allow_discount?: boolean | number | string | null;
+  allowDiscount?: boolean | number | string | null;
 }
 
 interface CalculateCartResponse {
@@ -398,13 +423,13 @@ interface CalculateCartResponse {
 
 const formatBaht = (value: number): string => `฿${value.toFixed(2)}`;
 
-// กำหนดเวลาในการรอรับบาร์โค้ดจากเครื่องสแกน (หน่วย: มิลลิวินาที)
+// à¸à¸³à¸«à¸™à¸”à¹€à¸§à¸¥à¸²à¹ƒà¸™à¸à¸²à¸£à¸£à¸­à¸£à¸±à¸šà¸šà¸²à¸£à¹Œà¹‚à¸„à¹‰à¸”à¸ˆà¸²à¸à¹€à¸„à¸£à¸·à¹ˆà¸­à¸‡à¸ªà¹à¸น (หน่วย: มิลลิวินาที)
 //const BARCODE_INPUT_TIMEOUT_MS = 5000;
 const BARCODE_INPUT_TIMEOUT_MS = 300;
 const SELECTED_POS_CUSTOMER_KEY = "pos_selected_customer";
 const BARCODE_NOT_FOUND_MESSAGE = "ไม่พบบาร์โค้ดสินค้า";
 const BARCODE_SCAN_FAILED_MESSAGE =
-  "ไม่สามารถตรวจสอบบาร์โค้ดได้ กรุณาลองใหม่อีกครั้ง";
+  "à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸•à¸£à¸§à¸ˆà¸ªà¸­à¸šà¸šà¸²à¸£à¹Œà¹‚à¸„à¹‰à¸”à¹„à¸”à¹‰ à¸à¸£à¸¸à¸“à¸²à¸¥à¸­à¸‡à¹ƒà¸«à¸¡à¹ˆà¸­à¸µà¸ครั้ง";
 
 const isEditableKeyboardTarget = (target: EventTarget | null): boolean => {
   if (!(target instanceof HTMLElement)) {
@@ -470,6 +495,15 @@ const isStoreSettings = (value: unknown): value is StoreSettings =>
       ("store_name" in value || "auto_pack_pricing_scope" in value),
   );
 
+const unwrapStoreSettings = (
+  data: StoreSettingsResponse | StoreSettings[],
+): StoreSettings => {
+  if (Array.isArray(data)) return data[0] ?? {};
+  if (Array.isArray(data.data)) return data.data[0] ?? {};
+  if (isStoreSettings(data.data)) return data.data;
+  return data.data?.store ?? data.store ?? {};
+};
+
 const getDiscountErrorMessage = (message?: string): string => {
   if (message === "This discount exceeds the allowed limit.") {
     return "ส่วนลดนี้เกินวงเงินที่อนุญาต";
@@ -486,8 +520,48 @@ const getDiscountErrorMessage = (message?: string): string => {
     return "ไม่สามารถตรวจสอบส่วนลดได้ เนื่องจากไม่พบข้อมูลเครื่อง POS";
   }
 
-  return message || "ไม่สามารถตรวจสอบส่วนลดได้ กรุณาลองใหม่อีกครั้ง";
+  if (message && !message.includes("à")) {
+    return message;
+  }
+
+  return "ไม่สามารถตรวจสอบส่วนลดได้ กรุณาลองใหม่อีกครั้ง";
 };
+
+const normalizeAllowDiscount = (
+  value: boolean | number | string | null | undefined,
+  fallback = true,
+): boolean => {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+
+  if (typeof value === "string") {
+    const normalizedValue = value.trim().toLowerCase();
+
+    if (["false", "0", "no", "n"].includes(normalizedValue)) {
+      return false;
+    }
+
+    if (["true", "1", "yes", "y"].includes(normalizedValue)) {
+      return true;
+    }
+  }
+
+  return fallback;
+};
+
+const getAllowDiscount = (
+  product: {
+    allow_discount?: boolean | number | string | null;
+    allowDiscount?: boolean | number | string | null;
+  },
+  fallback = true,
+): boolean =>
+  normalizeAllowDiscount(product.allow_discount ?? product.allowDiscount, fallback);
 
 const normalizeScanProductResponse = (
   payload: RawScanProductResponse,
@@ -583,7 +657,7 @@ const mapScannedProductToCartItem = (
           : undefined,
     stock_qty: product.stock_qty,
     stockBaseQty: Number(product.stockBaseQty ?? product.stock_base_qty ?? product.stock_qty ?? 0),
-    allow_discount: product.allow_discount ?? true,
+    allow_discount: getAllowDiscount(product),
     discount_amount: 0,
     final_price: unitPrice * qty,
     total_amount: unitPrice * qty,
@@ -621,10 +695,10 @@ const scanProduct = async (barcode: string): Promise<ScanProductResponse> => {
     throw new Error("ไม่พบ API endpoint ใน store");
   }
   if (!machineId) {
-    throw new Error("ไม่พบ machine_id กรุณาลงทะเบียนเครื่อง POS ก่อน");
+    throw new Error("ไม่พบ machine_id à¸รุณาลงทะเบียนเครื่อง POS à¸่อน");
   }
   if (!(await ensureValidAccessToken())) {
-    throw new Error("ไม่สามารถยืนยันตัวตนได้ กรุณาเข้าสู่ระบบใหม่");
+    throw new Error("à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸¢à¸·à¸™à¸¢à¸±à¸™à¸•à¸±à¸§à¸•à¸™à¹„à¸”à¹‰ à¸รุณาเข้าสู่ระบบใหม่");
   }
 
   let accessToken = await window.electronStore.get("access_token");
@@ -663,7 +737,7 @@ const scanProduct = async (barcode: string): Promise<ScanProductResponse> => {
         };
       }
       console.error("Scan API error:", data);
-      throw new Error(data.message || `สแกนสินค้าไม่สำเร็จ (${response.status})`);
+    throw new Error((Array.isArray(data) ? "" : data.message) || `โหลดการตั้งค่าร้านไม่สำเร็จ (${response.status})`);
     }
 
     return normalizeScanProductResponse(data);
@@ -681,7 +755,7 @@ const searchProducts = async (
     throw new Error("ไม่พบ API endpoint ใน store");
   }
   if (!(await ensureValidAccessToken())) {
-    throw new Error("ไม่สามารถยืนยันตัวตนได้ กรุณาเข้าสู่ระบบใหม่");
+    throw new Error("à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸¢à¸·à¸™à¸¢à¸±à¸™à¸•à¸±à¸§à¸•à¸™à¹„à¸”à¹‰ à¸รุณาเข้าสู่ระบบใหม่");
   }
 
   let accessToken = await window.electronStore.get("access_token");
@@ -708,10 +782,20 @@ const searchProducts = async (
 
   const data = (await response.json().catch(() => ({}))) as SearchProductResponse;
   if (!response.ok && data.status !== "not_found") {
-    throw new Error(data.message || `ค้นหาสินค้าไม่สำเร็จ (${response.status})`);
+    throw new Error((Array.isArray(data) ? "" : data.message) || `โหลดการตั้งค่าร้านไม่สำเร็จ (${response.status})`);
   }
 
-  return data;
+  if (data.status) {
+    return data;
+  }
+
+  const products = unwrapSearchedProducts(data.data);
+
+  return {
+    ...data,
+    status: products.length ? "success" : "not_found",
+    total: data.pagination?.total ?? products.length,
+  };
 };
 
 const loadStoreSettings = async (): Promise<StoreSettings> => {
@@ -720,7 +804,7 @@ const loadStoreSettings = async (): Promise<StoreSettings> => {
     throw new Error("ไม่พบ API endpoint ใน store");
   }
   if (!(await ensureValidAccessToken())) {
-    throw new Error("ไม่สามารถยืนยันตัวตนได้ กรุณาเข้าสู่ระบบใหม่");
+    throw new Error("à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸¢à¸·à¸™à¸¢à¸±à¸™à¸•à¸±à¸§à¸•à¸™à¹„à¸”à¹‰ à¸รุณาเข้าสู่ระบบใหม่");
   }
 
   let accessToken = await window.electronStore.get("access_token");
@@ -742,12 +826,14 @@ const loadStoreSettings = async (): Promise<StoreSettings> => {
     response = await request(accessToken);
   }
 
-  const data = (await response.json().catch(() => ({}))) as StoreSettingsResponse;
+  const data = (await response.json().catch(() => ({}))) as
+    | StoreSettingsResponse
+    | StoreSettings[];
   if (!response.ok) {
-    throw new Error(data.message || `โหลดการตั้งค่าร้านไม่สำเร็จ (${response.status})`);
+    throw new Error((Array.isArray(data) ? "" : data.message) || `โหลดการตั้งค่าร้านไม่สำเร็จ (${response.status})`);
   }
 
-  return (isStoreSettings(data.data) ? data.data : data.data?.store) ?? data.store ?? {};
+  return unwrapStoreSettings(data);
 };
 
 const loadCustomers = async (): Promise<PosCustomer[]> => {
@@ -756,7 +842,7 @@ const loadCustomers = async (): Promise<PosCustomer[]> => {
     throw new Error("ไม่พบ API endpoint ใน store");
   }
   if (!(await ensureValidAccessToken())) {
-    throw new Error("ไม่สามารถยืนยันตัวตนได้ กรุณาเข้าสู่ระบบใหม่");
+    throw new Error("à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸¢à¸·à¸™à¸¢à¸±à¸™à¸•à¸±à¸§à¸•à¸™à¹„à¸”à¹‰ à¸รุณาเข้าสู่ระบบใหม่");
   }
 
   let accessToken = await window.electronStore.get("access_token");
@@ -786,7 +872,7 @@ const loadCustomers = async (): Promise<PosCustomer[]> => {
       !Array.isArray(data) && typeof data === "object" && "message" in data
         ? String(data.message)
         : "";
-    throw new Error(message || `โหลดข้อมูลลูกค้าไม่สำเร็จ (${response.status})`);
+    throw new Error(message || `à¹‚à¸«à¸¥à¸”à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸¥à¸¹à¸ค้าไม่สำเร็จ (${response.status})`);
   }
 
   if (Array.isArray(data)) {
@@ -833,11 +919,90 @@ const unwrapSearchedProducts = (
     return payload.data;
   }
 
-  if ("product_id" in payload) {
+  if ("product_id" in payload || "id" in payload) {
     return [payload as SearchedProduct];
   }
 
   return [];
+};
+
+const mergeSearchProductIntoScannedProduct = (
+  scannedProduct: ScannedProduct,
+  searchProduct: SearchedProduct,
+): ScannedProduct => {
+  const productName =
+    scannedProduct.name ??
+    scannedProduct.productName ??
+    scannedProduct.product_name ??
+    searchProduct.name ??
+    searchProduct.product_name;
+  const productPrice = Number(
+    scannedProduct.salePrice ??
+      scannedProduct.sale_price ??
+      scannedProduct.price_per_unit ??
+      searchProduct.price ??
+      searchProduct.sale_price ??
+      0,
+  );
+  const productUnit =
+    scannedProduct.unit ??
+    scannedProduct.unitCode ??
+    scannedProduct.unit_code ??
+    searchProduct.unit ??
+    searchProduct.unit_code;
+
+  return {
+    ...scannedProduct,
+    id: scannedProduct.id ?? searchProduct.product_id ?? searchProduct.id,
+    productId:
+      scannedProduct.productId ??
+      scannedProduct.product_id ??
+      searchProduct.product_id ??
+      searchProduct.id,
+    product_id:
+      scannedProduct.product_id ??
+      scannedProduct.productId ??
+      searchProduct.product_id ??
+      searchProduct.id,
+    name: productName,
+    productName: productName,
+    product_name: productName,
+    barcode: scannedProduct.barcode || searchProduct.barcode || "",
+    sku: scannedProduct.sku ?? searchProduct.sku,
+    salePrice: productPrice,
+    sale_price: productPrice,
+    price_per_unit: productPrice,
+    stock_qty: scannedProduct.stock_qty ?? searchProduct.stock_qty,
+    unit: productUnit ?? undefined,
+    unitCode: productUnit ?? undefined,
+    unit_code: productUnit ?? undefined,
+    allow_discount: getAllowDiscount(searchProduct, getAllowDiscount(scannedProduct)),
+  };
+};
+
+const enrichScannedProductFromSearch = async (
+  scannedProduct: ScannedProduct,
+  keyword: string,
+): Promise<ScannedProduct> => {
+  try {
+    const result = await searchProducts(keyword);
+    const products = unwrapSearchedProducts(result.data);
+    const matchedProduct =
+      products.find(
+        (product) =>
+          product.barcode?.toLowerCase() === keyword.toLowerCase() ||
+          product.sku?.toLowerCase() === keyword.toLowerCase() ||
+          String(product.product_id ?? product.id ?? "") ===
+            String(scannedProduct.productId ?? scannedProduct.product_id ?? scannedProduct.id ?? ""),
+      ) ?? products[0];
+
+    return matchedProduct
+      ? mergeSearchProductIntoScannedProduct(scannedProduct, matchedProduct)
+      : scannedProduct;
+  } catch (error) {
+    console.error("Enrich scanned product error:", error);
+    return scannedProduct;
+  }
 };
 
 const toPositiveInteger = (value: unknown): number | null => {
@@ -988,7 +1153,7 @@ const heldBillFetch = async (
     throw new Error("ไม่พบ API endpoint ใน store");
   }
   if (!(await ensureValidAccessToken())) {
-    throw new Error("ไม่สามารถยืนยันตัวตนได้ กรุณาเข้าสู่ระบบใหม่");
+    throw new Error("à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸¢à¸·à¸™à¸¢à¸±à¸™à¸•à¸±à¸§à¸•à¸™à¹„à¸”à¹‰ à¸รุณาเข้าสู่ระบบใหม่");
   }
 
   let accessToken = await window.electronStore.get("access_token");
@@ -1034,11 +1199,77 @@ const calculateCartPromotions = async (
   const data = (await response.json().catch(() => ({}))) as CalculatePromotionsResponse;
 
   if (!response.ok) {
-    throw new Error(data.message || `Calculate promotions failed (${response.status})`);
+    throw new Error((Array.isArray(data) ? "" : data.message) || `โหลดการตั้งค่าร้านไม่สำเร็จ (${response.status})`);
   }
 
   return data;
 };
+
+const getCalculatedPromotionProductId = (
+  item: CalculatedPromotionItem,
+): number | string | undefined => item.product_id ?? item.productId;
+
+const findCalculatedPromotionItem = (
+  calculatedItems: CalculatedPromotionItem[],
+  cartItem: CartItem,
+): CalculatedPromotionItem | undefined => {
+  const productId = cartItem.product_id ?? cartItem.id;
+  const barcode = String(cartItem.barcode ?? "").trim();
+
+  return calculatedItems.find((promotionItem) => {
+    const promotionProductId = getCalculatedPromotionProductId(promotionItem);
+    if (
+      promotionProductId != null &&
+      productId != null &&
+      Number(promotionProductId) === Number(productId)
+    ) {
+      return true;
+    }
+
+    return (
+      barcode !== "" &&
+      String(promotionItem.barcode ?? "").trim() === barcode
+    );
+  });
+};
+
+const applyCalculatedPromotionsToCartItems = (
+  items: CartItem[],
+  calculatedItems: CalculatedPromotionItem[],
+): CartItem[] =>
+  items.map((item) => {
+    const calculated = findCalculatedPromotionItem(calculatedItems, item);
+    const promotionDiscountAmount =
+      Number(calculated?.discount_amount ?? calculated?.discountAmount ?? 0) || 0;
+    const promotionFinalPrice =
+      Number(
+        calculated?.final_price ??
+          calculated?.finalPrice ??
+          calculated?.total_amount ??
+          calculated?.totalAmount ??
+          item.final_price ??
+          item.unit_price ??
+          item.price ??
+          item.sale_price ??
+          0,
+      ) || 0;
+    const lineTotal =
+      (Number(item.qty) || 0) *
+      (Number(item.unit_price ?? item.price ?? item.sale_price ?? 0) || 0);
+    const manualDiscountAmount = Math.min(
+      Math.max(Number(item.discount ?? 0) || 0, 0),
+      lineTotal,
+    );
+    const discountAmount = promotionDiscountAmount + manualDiscountAmount;
+    const finalPrice = Math.max(promotionFinalPrice - manualDiscountAmount, 0);
+
+    return {
+      ...item,
+      discount_amount: discountAmount,
+      final_price: finalPrice,
+      total_amount: Math.max(finalPrice, 0),
+    };
+  });
 
 const calculateCartUnitPrices = async (
   machineId: string,
@@ -1095,7 +1326,7 @@ const calculateCartUnitPrices = async (
   const data = (await response.json().catch(() => ({}))) as CalculateCartResponse;
 
   if (!response.ok) {
-    throw new Error(data.message || `Calculate cart failed (${response.status})`);
+    throw new Error((Array.isArray(data) ? "" : data.message) || `โหลดการตั้งค่าร้านไม่สำเร็จ (${response.status})`);
   }
 
   return data;
@@ -1476,7 +1707,7 @@ const mapFavoriteProductUnitToScannedProduct = (
     stock_qty: product.stock_qty,
     unit: getFavoriteUnitCode(unit) ?? product.unit_code,
     price_per_unit: getFavoriteUnitSalePrice(unit, Number(product.sale_price) || 0),
-    allow_discount: product.allow_discount,
+    allow_discount: getAllowDiscount(product),
   };
 };
 
@@ -1543,7 +1774,7 @@ const mapCalculateCartResponseToCart = (
         calculatedAmount,
         savingAmount: Number(item.savingAmount ?? item.saving_amount ?? 0) || 0,
         pricingBreakdown,
-        allow_discount: false,
+        allow_discount: getAllowDiscount(item, false),
         discount: 0,
       };
     })
@@ -1617,6 +1848,10 @@ const mapCalculatedCartItems = (
           final_price: totalAmount,
           total_amount: totalAmount,
           pricingBreakdown: [line],
+          allow_discount: getAllowDiscount(
+            calculated,
+            normalizeAllowDiscount(source?.allow_discount),
+          ),
           discount: Number(source?.discount ?? 0) || 0,
         };
       });
@@ -1672,6 +1907,10 @@ const mapCalculatedCartItems = (
         calculated.totalAmount ?? calculated.total_amount ?? finalPrice,
       pricingBreakdown:
         calculated.pricingBreakdown ?? calculated.pricing_breakdown,
+      allow_discount: getAllowDiscount(
+        calculated,
+        normalizeAllowDiscount(source?.allow_discount),
+      ),
       discount: Number(source?.discount ?? 0) || 0,
     };
   });
@@ -1716,7 +1955,7 @@ const loadHeldBills = async (): Promise<HeldBill[]> => {
       !Array.isArray(data) && typeof data.message === "string"
         ? data.message
         : "";
-    throw new Error(message || `โหลดรายการบิลพักไม่สำเร็จ (${response.status})`);
+    throw new Error(message || `à¹‚à¸«à¸¥à¸”à¸£à¸²à¸¢à¸à¸²à¸£à¸šà¸´à¸¥à¸žà¸±à¸ไม่สำเร็จ (${response.status})`);
   }
 
   return unwrapHeldBills(data);
@@ -1733,7 +1972,7 @@ const loadHeldBillDetail = async (
   if (!response.ok) {
     const message =
       "message" in data && typeof data.message === "string" ? data.message : "";
-    throw new Error(message || `โหลดรายละเอียดบิลพักไม่สำเร็จ (${response.status})`);
+    throw new Error(message || `à¹‚à¸«à¸¥à¸”à¸£à¸²à¸¢à¸¥à¸°à¹€à¸­à¸µà¸¢à¸”à¸šà¸´à¸¥à¸žà¸±à¸ไม่สำเร็จ (${response.status})`);
   }
 
   if ("held_bill" in data && data.held_bill) {
@@ -1755,7 +1994,7 @@ const createHeldBill = async (payload: HeldBillPayload): Promise<void> => {
   const data = (await response.json().catch(() => ({}))) as { message?: string };
 
   if (!response.ok) {
-    throw new Error(data.message || `พักบิลไม่สำเร็จ (${response.status})`);
+    throw new Error((Array.isArray(data) ? "" : data.message) || `โหลดการตั้งค่าร้านไม่สำเร็จ (${response.status})`);
   }
 };
 
@@ -1766,7 +2005,7 @@ const deleteHeldBill = async (id: HeldBill["id"]): Promise<void> => {
   const data = (await response.json().catch(() => ({}))) as { message?: string };
 
   if (!response.ok) {
-    throw new Error(data.message || `ลบบิลพักไม่สำเร็จ (${response.status})`);
+    throw new Error((Array.isArray(data) ? "" : data.message) || `โหลดการตั้งค่าร้านไม่สำเร็จ (${response.status})`);
   }
 };
 
@@ -1794,7 +2033,7 @@ const mapHeldBillItemToCartItem = (item: HeldBillItem): CartItem => {
     discount_amount: item.discount_amount ?? 0,
     total_amount: item.total_amount ?? qty * unitPrice,
     track_stock: item.track_stock ?? false,
-    allow_discount: item.allow_discount ?? true,
+    allow_discount: getAllowDiscount(item),
     image_url: item.image_url ?? null,
     note: item.note ?? "",
     discount: Number(item.discount_amount ?? 0),
@@ -2083,7 +2322,7 @@ export default function PosLandingPages() {
 
     const machineId = getStoredMachineId(storedDevice);
     if (!machineId) {
-      setScanMessage("ไม่พบ machine_id กรุณาลงทะเบียนเครื่อง POS ก่อน");
+      setScanMessage("ไม่พบ machine_id à¸รุณาลงทะเบียนเครื่อง POS à¸่อน");
       return false;
     }
 
@@ -2106,12 +2345,18 @@ export default function PosLandingPages() {
             sum + (Number(item.total_amount ?? item.final_price ?? item.price * item.qty) || 0),
           0,
         );
-        cartRef.current = nextSourceItems;
-        setCart(nextSourceItems);
-        setPromotionSubtotal(fallbackTotal);
-        setDiscountTotal(0);
-        setGrandTotal(fallbackTotal);
-        setAppliedPromotions([]);
+        const promotionResult = await calculateCartPromotions(nextSourceItems);
+        const promotionItems = applyCalculatedPromotionsToCartItems(
+          nextSourceItems,
+          promotionResult.items ?? [],
+        );
+
+        cartRef.current = promotionItems;
+        setCart(promotionItems);
+        setPromotionSubtotal(Number(promotionResult.subtotal ?? fallbackTotal) || 0);
+        setDiscountTotal(Number(promotionResult.discount_total ?? 0) || 0);
+        setGrandTotal(Number(promotionResult.grand_total ?? fallbackTotal) || 0);
+        setAppliedPromotions(promotionResult.applied_promotions ?? []);
         if (options.selectedName !== undefined) {
           setSelectedCartItemName(options.selectedName);
         }
@@ -2125,7 +2370,7 @@ export default function PosLandingPages() {
       console.log("calculate-cart response", result);
       console.log("cart before update", cartRef.current);
       const updatedItems = [
-        ...mapCalculateCartResponseToCart(result),
+        ...mapCalculatedCartItems(calculableItems, getCalculateCartItems(result)),
         ...uncalculableItems,
       ];
       console.log("cart after update", updatedItems);
@@ -2139,25 +2384,33 @@ export default function PosLandingPages() {
           sum + (Number(item.total_amount ?? item.final_price ?? item.price * item.qty) || 0),
         0,
       );
-
-      cartRef.current = updatedItems;
-      setCart(updatedItems);
-      setPromotionSubtotal(
+      const calculateCartSubtotal =
         getCalculateCartSubtotal(result, fallbackSubtotal - uncalculableTotal) +
-          uncalculableTotal,
+        uncalculableTotal;
+      const promotionResult = await calculateCartPromotions(updatedItems);
+      const promotionItems = applyCalculatedPromotionsToCartItems(
+        updatedItems,
+        promotionResult.items ?? [],
       );
-      setDiscountTotal(getCalculateCartDiscountTotal(result));
+
+      cartRef.current = promotionItems;
+      setCart(promotionItems);
+      setPromotionSubtotal(Number(promotionResult.subtotal ?? calculateCartSubtotal) || 0);
+      setDiscountTotal(Number(promotionResult.discount_total ?? getCalculateCartDiscountTotal(result)) || 0);
       setGrandTotal(
-        getCalculateCartGrandTotal(result, fallbackSubtotal - uncalculableTotal) +
-          uncalculableTotal,
+        Number(
+          promotionResult.grand_total ??
+            getCalculateCartGrandTotal(result, fallbackSubtotal - uncalculableTotal) +
+              uncalculableTotal,
+        ) || 0,
       );
-      setAppliedPromotions([]);
+      setAppliedPromotions(promotionResult.applied_promotions ?? []);
       if (options.selectedName !== undefined) {
         const selectedExists =
           options.selectedName &&
-          updatedItems.some((item) => item.name === options.selectedName);
+          promotionItems.some((item) => item.name === options.selectedName);
         setSelectedCartItemName(
-          selectedExists ? options.selectedName ?? null : updatedItems[0]?.name ?? null,
+          selectedExists ? options.selectedName ?? null : promotionItems[0]?.name ?? null,
         );
       }
       if (options.focus !== false) {
@@ -2263,39 +2516,7 @@ export default function PosLandingPages() {
 
         const calculatedItems = result.items ?? [];
         setCart((currentItems) =>
-          currentItems.map((item) => {
-            const productId = item.product_id ?? item.id;
-            const calculated = calculatedItems.find(
-              (promotionItem) =>
-                Number(promotionItem.product_id) === Number(productId),
-            );
-            const promotionDiscountAmount = Number(calculated?.discount_amount ?? 0) || 0;
-            const promotionFinalPrice =
-              Number(
-                calculated?.final_price ??
-                  item.final_price ??
-                  item.unit_price ??
-                  item.price ??
-                  item.sale_price ??
-                  0,
-              ) || 0;
-            const lineTotal =
-              (Number(item.qty) || 0) *
-              (Number(item.unit_price ?? item.price ?? item.sale_price ?? 0) || 0);
-            const manualDiscountAmount = Math.min(
-              Math.max(Number(item.discount ?? 0) || 0, 0),
-              lineTotal,
-            );
-            const discountAmount = promotionDiscountAmount + manualDiscountAmount;
-            const finalPrice = Math.max(promotionFinalPrice - manualDiscountAmount, 0);
-
-            return {
-              ...item,
-              discount_amount: discountAmount,
-              final_price: finalPrice,
-              total_amount: Math.max(finalPrice, 0),
-            };
-          }),
+          applyCalculatedPromotionsToCartItems(currentItems, calculatedItems),
         );
       } catch (error) {
         console.error("Calculate promotions error:", error);
@@ -2451,15 +2672,15 @@ export default function PosLandingPages() {
     });
 
     if (!userId) {
-      throw new Error("ไม่พบข้อมูลผู้ใช้งาน กรุณา Login ใหม่");
+      throw new Error("à¹„à¸¡à¹ˆà¸žà¸šà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸œà¸¹à¹‰à¹ƒà¸Šà¹‰à¸‡à¸²à¸™ à¸รุณา Login ใหม่");
     }
 
     if (!machineId) {
-      throw new Error("ไม่พบ machine_id กรุณาลงทะเบียนเครื่อง POS ก่อน");
+      throw new Error("ไม่พบ machine_id à¸รุณาลงทะเบียนเครื่อง POS à¸่อน");
     }
 
     if (cart.length === 0) {
-      throw new Error("ไม่พบรายการสินค้าในตะกร้า");
+      throw new Error("à¹„à¸¡à¹ˆà¸žà¸šà¸£à¸²à¸¢à¸à¸²à¸£à¸ªà¸´à¸™à¸„à¹‰à¸²à¹ƒà¸™à¸•à¸°à¸ร้า");
     }
 
     const payload: HeldBillPayload = {
@@ -2497,7 +2718,7 @@ export default function PosLandingPages() {
             : 0,
           total_amount: Number.isFinite(totalAmount) ? totalAmount : 0,
           track_stock: item.track_stock ?? false,
-          allow_discount: item.allow_discount ?? true,
+          allow_discount: getAllowDiscount(item),
           image_url: item.image_url ?? null,
           note: item.note ?? "",
         };
@@ -2516,7 +2737,7 @@ export default function PosLandingPages() {
     );
 
     if (invalidItem) {
-      throw new Error("ข้อมูลสินค้าในตะกร้าไม่ถูกต้อง กรุณาตรวจสอบรายการสินค้า");
+      throw new Error("à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ªà¸´à¸™à¸„à¹‰à¸²à¹ƒà¸™à¸•à¸°à¸à¸£à¹‰à¸²à¹„à¸¡à¹ˆà¸–à¸¹à¸à¸•à¹‰à¸­à¸‡ à¸à¸£à¸¸à¸“à¸²à¸•à¸£à¸§à¸ˆà¸ªà¸­à¸šà¸£à¸²à¸¢à¸ารสินค้า");
     }
 
     return payload;
@@ -2552,16 +2773,16 @@ export default function PosLandingPages() {
 
     try {
       const payload = await buildHeldBillPayload(
-        holdBillName.trim() || "บิลพัก",
+        holdBillName.trim() || "à¸šà¸´à¸¥à¸žà¸±à¸",
       );
       console.log("POST /held-bills payload", payload);
       await createHeldBill(payload);
       clearCart();
       setShowHoldBillModal(false);
       setHoldBillName("");
-      setPosToast("พักบิลสำเร็จ");
+      setPosToast("à¸žà¸±à¸บิลสำเร็จ");
     } catch (error) {
-      setHoldBillError(getHeldBillErrorMessage(error, "พักบิลไม่สำเร็จ"));
+      setHoldBillError(getHeldBillErrorMessage(error, "à¸žà¸±à¸บิลไม่สำเร็จ"));
     } finally {
       setIsHoldingBill(false);
     }
@@ -2575,7 +2796,7 @@ export default function PosLandingPages() {
       setHeldBills(await loadHeldBills());
     } catch (error) {
       setHeldBillsError(
-        getHeldBillErrorMessage(error, "โหลดรายการบิลพักไม่สำเร็จ"),
+        getHeldBillErrorMessage(error, "à¹‚à¸«à¸¥à¸”à¸£à¸²à¸¢à¸à¸²à¸£à¸šà¸´à¸¥à¸žà¸±à¸ไม่สำเร็จ"),
       );
     } finally {
       setIsLoadingHeldBills(false);
@@ -2608,7 +2829,7 @@ export default function PosLandingPages() {
   const openHeldBill = async (heldBill: HeldBill) => {
     if (cart.length > 0) {
       const shouldReplace = window.confirm(
-        "ต้องการแทนที่ตะกร้าปัจจุบันด้วยบิลพักนี้หรือไม่?",
+        "à¸•à¹‰à¸­à¸‡à¸à¸²à¸£à¹à¸—à¸™à¸—à¸µà¹ˆà¸•à¸°à¸à¸£à¹‰à¸²à¸›à¸±à¸ˆà¸ˆà¸¸à¸šà¸±à¸™à¸”à¹‰à¸§à¸¢à¸šà¸´à¸¥à¸žà¸±à¸นี้หรือไม่?",
       );
       if (!shouldReplace) {
         return;
@@ -2630,7 +2851,7 @@ export default function PosLandingPages() {
       setShowHeldBillsModal(false);
     } catch (error) {
       setHeldBillsError(
-        getHeldBillErrorMessage(error, "โหลดรายละเอียดบิลพักไม่สำเร็จ"),
+        getHeldBillErrorMessage(error, "à¹‚à¸«à¸¥à¸”à¸£à¸²à¸¢à¸¥à¸°à¹€à¸­à¸µà¸¢à¸”à¸šà¸´à¸¥à¸žà¸±à¸ไม่สำเร็จ"),
       );
     } finally {
       setOpeningHeldBillId(null);
@@ -2737,10 +2958,10 @@ export default function PosLandingPages() {
         priceMode === "WEIGHT_PRICE" ? "WEIGHT" : priceMode,
       sale_price: Number(product.sale_price) || 0,
       stock_qty: product.stock_qty,
-      allow_discount: product.allow_discount,
+      allow_discount: getAllowDiscount(product),
       unit:
         product.unit_code ||
-        (priceMode === "WEIGHT_PRICE" ? "กก." : undefined),
+        (priceMode === "WEIGHT_PRICE" ? "à¸à¸." : undefined),
       price_per_unit: Number(product.sale_price) || 0,
     };
 
@@ -2776,6 +2997,7 @@ export default function PosLandingPages() {
                 product_id: item.product_id ?? getScannedProductId(product),
                 productUnitId: item.productUnitId ?? productUnitId,
                 barcode: item.barcode ?? product.barcode ?? null,
+                allow_discount: getAllowDiscount(product, getAllowDiscount(item)),
                 qty: item.qty + qty,
                 totalBaseQty: Number(item.totalBaseQty ?? item.qty) + qty,
                 final_price: (item.qty + qty) * item.price,
@@ -2789,19 +3011,36 @@ export default function PosLandingPages() {
   };
 
   const changeItemDiscount = (name: string, discount: number) => {
-    setCart((items) =>
+    const applyDiscount = (items: CartItem[]): CartItem[] =>
       items.map((item) => {
         if (item.name !== name || !item.allow_discount) {
           return item;
         }
 
-        const lineTotal = item.price * item.qty;
+        const lineTotal =
+          Number(item.regularAmount ?? item.price * item.qty) || item.price * item.qty;
+        const nextDiscount = Math.min(Math.max(discount, 0), lineTotal);
+        const nextTotal = Math.max(lineTotal - nextDiscount, 0);
+
         return {
           ...item,
-          discount: Math.min(Math.max(discount, 0), lineTotal),
+          discount: nextDiscount,
+          discount_amount: nextDiscount,
+          final_price: nextTotal,
+          total_amount: nextTotal,
         };
-      }),
-    );
+      });
+
+    setSourceCart((items) => {
+      const nextItems = applyDiscount(items);
+      sourceCartRef.current = nextItems;
+      return nextItems;
+    });
+    setCart((items) => {
+      const nextItems = applyDiscount(items);
+      cartRef.current = nextItems;
+      return nextItems;
+    });
   };
 
   const openDiscountPopup = (name: string) => {
@@ -2838,12 +3077,12 @@ export default function PosLandingPages() {
     const lineTotal = currentItem ? currentItem.price * currentItem.qty : 0;
 
     if (!currentItem) {
-      setDiscountPopupError("ไม่พบรายการสินค้าที่ต้องการให้ส่วนลด");
+      setDiscountPopupError("à¹„à¸¡à¹ˆà¸žà¸šà¸£à¸²à¸¢à¸à¸²à¸£à¸ªà¸´à¸™à¸„à¹‰à¸²à¸—à¸µà¹ˆà¸•à¹‰à¸­à¸‡à¸ารให้ส่วนลด");
       return;
     }
 
     if (!Number.isFinite(discountAmount)) {
-      setDiscountPopupError("กรุณากรอกส่วนลดเป็นตัวเลข");
+      setDiscountPopupError("à¸à¸£à¸¸à¸“à¸²à¸à¸£à¸­à¸ส่วนลดเป็นตัวเลข");
       return;
     }
 
@@ -2853,7 +3092,7 @@ export default function PosLandingPages() {
     }
 
     if (discountAmount > lineTotal) {
-      setDiscountPopupError("ส่วนลดต้องไม่เกินยอดรวมรายการสินค้า");
+      setDiscountPopupError("à¸ªà¹ˆà¸§à¸™à¸¥à¸”à¸•à¹‰à¸­à¸‡à¹„à¸¡à¹ˆà¹€à¸à¸´à¸™à¸¢à¸­à¸”à¸£à¸§à¸¡à¸£à¸²à¸¢à¸ารสินค้า");
       return;
     }
 
@@ -2895,6 +3134,7 @@ export default function PosLandingPages() {
       setIsCheckingDiscount(true);
       const response = await checkDiscount({
         product_id: String(productId),
+        qty: currentItem.qty,
         machine_id: machineId,
         discount_amount: discountAmount,
       });
@@ -2933,7 +3173,7 @@ export default function PosLandingPages() {
       setCustomerLoadError(
         error instanceof Error
           ? error.message
-          : "ไม่สามารถโหลดข้อมูลลูกค้าได้",
+          : "à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¹‚à¸«à¸¥à¸”à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸¥à¸¹à¸ค้าได้",
       );
     } finally {
       setIsLoadingCustomers(false);
@@ -2998,19 +3238,28 @@ export default function PosLandingPages() {
   };
 
   const selectSearchedProduct = (product: SearchedProduct) => {
+    const productId = product.product_id ?? product.id;
+    const productName = product.name ?? product.product_name ?? "-";
+    const productPrice = Number(product.price ?? product.sale_price) || 0;
+    const productUnit = product.unit ?? product.unit_code ?? undefined;
     const cartProduct: ScannedProduct = {
-      id: product.product_id,
+      id: productId,
       barcode: product.barcode ?? "",
-      name: product.name,
+      name: productName,
+      productName,
+      product_name: productName,
       product_type:
         product.price_mode === "WEIGHT_PRICE"
           ? "WEIGHT"
           : product.price_mode,
-      sale_price: Number(product.price) || 0,
+      sale_price: productPrice,
+      salePrice: productPrice,
       stock_qty: product.stock_qty,
-      allow_discount: product.allow_discount,
-      unit: product.unit || (product.price_mode === "WEIGHT_PRICE" ? "กก." : undefined),
-      price_per_unit: Number(product.price) || 0,
+      allow_discount: getAllowDiscount(product),
+      unit: productUnit || (product.price_mode === "WEIGHT_PRICE" ? "à¸à¸." : undefined),
+      unitCode: productUnit,
+      unit_code: productUnit ?? undefined,
+      price_per_unit: productPrice,
     };
 
     setSearchResults([]);
@@ -3049,12 +3298,17 @@ export default function PosLandingPages() {
         const scanResult = await scanProduct(normalizedBarcode);
 
         if (scanResult.success && scanResult.product) {
+          const scannedProduct = await enrichScannedProductFromSearch(
+            scanResult.product,
+            normalizedBarcode,
+          );
+
           if (
             scanResult.code === "WEIGHT_REQUIRED" ||
-            scanResult.product.product_type === "WEIGHT"
+            scannedProduct.product_type === "WEIGHT"
           ) {
             setScanInputValue("");
-            setPendingScanInput({ type: "WEIGHT", product: scanResult.product });
+            setPendingScanInput({ type: "WEIGHT", product: scannedProduct });
             setSearchQuery("");
             shouldRefocusSearch = false;
             return;
@@ -3062,18 +3316,18 @@ export default function PosLandingPages() {
 
           if (
             scanResult.code === "PRICE_REQUIRED" ||
-            scanResult.product.product_type === "OPEN_PRICE" ||
-            scanResult.product.product_type === "SERVICE_PRICE"
+            scannedProduct.product_type === "OPEN_PRICE" ||
+            scannedProduct.product_type === "SERVICE_PRICE"
           ) {
-            openPriceInput(scanResult.product);
+            openPriceInput(scannedProduct);
             setSearchQuery("");
             shouldRefocusSearch = false;
             return;
           }
 
           await addScannedProductToCart(
-            scanResult.product,
-            getScannedProductPrice(scanResult.product),
+            scannedProduct,
+            getScannedProductPrice(scannedProduct),
           );
           setSearchQuery("");
           return;
@@ -3092,7 +3346,8 @@ export default function PosLandingPages() {
         (product) =>
           product.barcode?.toLowerCase() === keyword.toLowerCase() ||
           product.sku?.toLowerCase() === keyword.toLowerCase() ||
-          product.name.toLowerCase() === keyword.toLowerCase(),
+          (product.name ?? product.product_name ?? "").toLowerCase() ===
+            keyword.toLowerCase(),
       );
 
       if (products.length === 1 || exactMatch) {
@@ -3101,7 +3356,7 @@ export default function PosLandingPages() {
       }
 
       setSearchResults(products);
-      setSearchMessage(`พบสินค้า ${products.length} รายการ กรุณาเลือกรายการ`);
+      setSearchMessage(`พบสินค้า ${products.length} à¸£à¸²à¸¢à¸à¸²à¸£ à¸à¸£à¸¸à¸“à¸²à¹€à¸¥à¸·à¸­à¸à¸£à¸²à¸¢à¸าร`);
     } catch (error) {
       setSearchMessage(
         error instanceof Error ? error.message : "ไม่สามารถค้นหาสินค้าได้",
@@ -3114,11 +3369,11 @@ export default function PosLandingPages() {
     }
   };
 
-  // ประมวลผลบาร์โค้ดที่ "normalize แล้ว" เท่านั้น ห้ามเรียก normalizeBarcode ซ้ำที่นี่
-  // (ของเดิม bug อยู่ตรงที่คิวเก็บค่าที่ normalize แล้ว แต่ดันเอาไปวนเข้า
-  // handleBarcodeScan ใหม่ ทำให้ normalizeBarcode ถูกเรียกซ้ำสองครั้งกับบาร์โค้ด
-  // เดียวกัน ถ้าเกิดมีอักขระอย่าง "-", "/", "." ปนอยู่ในบาร์โค้ดจริง มันจะถูก
-  // แปลงเป็นตัวเลขผิดๆ ซ้ำอีกรอบ ทำให้ยิงบาร์โค้ดซ้ำแล้วหาไม่เจอ)
+  // ประมวลผลบาร์โค้ดที่ "normalize à¹à¸¥à¹‰à¸§" à¹€à¸—à¹ˆà¸²à¸™à¸±à¹‰à¸™ à¸«à¹‰à¸²à¸¡à¹€à¸£à¸µà¸¢à¸ normalizeBarcode ซ้ำที่นี่
+  // (ของเดิม bug à¸­à¸¢à¸¹à¹ˆà¸•à¸£à¸‡à¸—à¸µà¹ˆà¸„à¸´à¸§à¹€à¸็บค่าที่ normalize à¹à¸¥à¹‰à¸§ à¹ต่ดันเอาไปวนเข้า
+  // handleBarcodeScan ใหม่ ทำให้ normalizeBarcode à¸–à¸¹à¸à¹€à¸£à¸µà¸¢à¸à¸‹à¹‰à¸³à¸ªà¸­à¸‡à¸„à¸£à¸±à¹‰à¸‡à¸à¸±à¸šà¸šà¸²à¸£à¹Œà¹‚à¸„à¹‰à¸”
+  // à¹€à¸”à¸µà¸¢à¸§à¸à¸±à¸™ à¸–à¹‰à¸²à¹€à¸à¸´à¸”à¸¡à¸µà¸­à¸±à¸à¸‚à¸£à¸°à¸­à¸¢à¹ˆà¸²à¸‡ "-", "/", "." à¸›à¸™à¸­à¸¢à¸¹à¹ˆà¹ƒà¸™à¸šà¸²à¸£à¹Œà¹‚à¸„à¹‰à¸”à¸ˆà¸£à¸´à¸‡ à¸¡à¸±à¸™à¸ˆà¸°à¸–à¸¹à¸
+  // à¹à¸›à¸¥à¸‡à¹€à¸›à¹‡à¸™à¸•à¸±à¸§à¹€à¸¥à¸‚à¸œà¸´à¸”à¹† à¸‹à¹‰à¸³à¸­à¸µà¸à¸£à¸­à¸š à¸—à¸³à¹ƒà¸«à¹‰à¸¢à¸´à¸‡à¸šà¸²à¸£à¹Œà¹‚à¸„à¹‰à¸”à¸‹à¹‰à¸³à¹ล้วหาไม่เจอ)
   const processNormalizedBarcode = async (normalizedBarcode: string) => {
     if (!normalizedBarcode) {
       return;
@@ -3200,8 +3455,8 @@ export default function PosLandingPages() {
 
       const pendingBarcode = pendingBarcodeScanQueueRef.current.shift();
       if (pendingBarcode) {
-        // pendingBarcode ถูก normalize มาแล้วตั้งแต่ตอน push เข้าคิว
-        // จึงเรียก processNormalizedBarcode ตรงๆ ห้ามวนกลับไป normalize ซ้ำ
+        // pendingBarcode à¸–à¸¹à¸ normalize à¸¡à¸²à¹à¸¥à¹‰à¸§à¸•à¸±à¹‰à¸‡à¹ต่ตอน push à¹€à¸‚à¹‰à¸²à¸„à¸´à¸§
+        // à¸ˆà¸¶à¸‡à¹€à¸£à¸µà¸¢à¸ processNormalizedBarcode à¸•à¸£à¸‡à¹† à¸«à¹‰à¸²à¸¡à¸§à¸™à¸ลับไป normalize ซ้ำ
         void processNormalizedBarcode(pendingBarcode);
       } else if (shouldRefocusBarcode) {
         focusBarcodeInput();
@@ -3279,8 +3534,8 @@ export default function PosLandingPages() {
     if (!Number.isFinite(value) || value <= 0) {
       setScanMessage(
         pendingScanInput.type === "WEIGHT"
-          ? "กรุณากรอกน้ำหนักมากกว่า 0"
-          : "กรุณากรอกราคามากกว่า 0",
+          ? "à¸à¸£à¸¸à¸“à¸²à¸à¸£à¸­à¸à¸™à¹‰à¸³à¸«à¸™à¸±à¸à¸¡à¸²à¸à¸ว่า 0"
+          : "à¸à¸£à¸¸à¸“à¸²à¸à¸£à¸­à¸à¸£à¸²à¸„à¸²à¸¡à¸²à¸à¸ว่า 0",
       );
       scanInputRef.current?.focus();
       return;
@@ -3318,7 +3573,7 @@ export default function PosLandingPages() {
         await deleteHeldBill(activeHeldBillId);
       } catch (error) {
         setScanMessage(
-          getHeldBillErrorMessage(error, "ลบบิลพักหลังชำระเงินไม่สำเร็จ"),
+          getHeldBillErrorMessage(error, "à¸¥à¸šà¸šà¸´à¸¥à¸žà¸±à¸หลังชำระเงินไม่สำเร็จ"),
         );
         return;
       }
@@ -3328,7 +3583,7 @@ export default function PosLandingPages() {
     clearCart();
   };
 
-  // จัดการคีย์บอร์ดสำหรับ Popup ยืนยันการลบ
+  // à¸ˆà¸±à¸”à¸ารคีย์บอร์ดสำหรับ Popup à¸¢à¸·à¸™à¸¢à¸±à¸™à¸ารลบ
   useEffect(() => {
     if (scanInputFocusTimerRef.current) {
       clearTimeout(scanInputFocusTimerRef.current);
@@ -3350,7 +3605,7 @@ export default function PosLandingPages() {
     };
   }, [pendingScanInput]);
 
-  // โฟกัสช่องกรอกส่วนลดเมื่อ popup ส่วนลดเปิดขึ้น
+  // à¹‚à¸Ÿà¸à¸±à¸ªà¸Šà¹ˆà¸­à¸‡à¸à¸£à¸­à¸ส่วนลดเมื่อ popup ส่วนลดเปิดขึ้น
   useEffect(() => {
     if (!discountPopupItemName) {
       return;
@@ -3426,7 +3681,7 @@ export default function PosLandingPages() {
     return () => clearTimeout(timer);
   }, [posToast]);
 
-  // ปิด popup ส่วนลดอัตโนมัติถ้ารายการสินค้านั้นถูกลบออกจากตะกร้าแล้ว
+  // ปิด popup à¸ªà¹ˆà¸§à¸™à¸¥à¸”à¸­à¸±à¸•à¹‚à¸™à¸¡à¸±à¸•à¸´à¸–à¹‰à¸²à¸£à¸²à¸¢à¸à¸²à¸£à¸ªà¸´à¸™à¸„à¹‰à¸²à¸™à¸±à¹‰à¸™à¸–à¸¹à¸à¸¥à¸šà¸­à¸­à¸à¸ˆà¸²à¸à¸•à¸°à¸à¸£à¹‰à¸²à¹ล้ว
   useEffect(() => {
     if (
       discountPopupItemName &&
@@ -3648,14 +3903,14 @@ export default function PosLandingPages() {
         return;
       }
 
-      // ปุ่ม Escape -> ยกเลิก
+      // ปุ่ม Escape -> à¸¢à¸à¹€à¸¥à¸´à¸
       if (event.key === "Escape") {
         event.preventDefault();
         cancelButtonRef.current?.click();
         return;
       }
 
-      // ปุ่ม Tab -> วนไปมาระหว่างปุ่ม ยกเลิก และ ยืนยัน
+      // ปุ่ม Tab -> à¸§à¸™à¹„à¸›à¸¡à¸²à¸£à¸°à¸«à¸§à¹ˆà¸²à¸‡à¸›à¸¸à¹ˆà¸¡ à¸¢à¸à¹€à¸¥à¸´à¸ à¹ละ ยืนยัน
       if (event.key === "Tab") {
         event.preventDefault();
         event.stopPropagation();
@@ -3682,13 +3937,13 @@ export default function PosLandingPages() {
     };
   }, [showClearConfirm]);
 
-  // จัดการคีย์บอร์ดหลัก
+  // à¸ˆà¸±à¸”à¸à¸²à¸£à¸„à¸µà¸¢à¹Œà¸šà¸­à¸£à¹Œà¸”à¸«à¸¥à¸±à¸
   useEffect(() => {
     const handleKeyboardShortcut = (event: KeyboardEvent) => {
       const isTyping = isEditableKeyboardTarget(event.target);
       const isBarcodeScannerInput = event.target === barcodeInputRef.current;
 
-      // ถ้า Popup ยืนยันการลบเปิดอยู่ ให้ข้ามการทำงานทั้งหมด
+      // ถ้า Popup à¸¢à¸·à¸™à¸¢à¸±à¸™à¸à¸²à¸£à¸¥à¸šà¹€à¸›à¸´à¸”à¸­à¸¢à¸¹à¹ˆ à¹ƒà¸«à¹‰à¸‚à¹‰à¸²à¸¡à¸ารทำงานทั้งหมด
       if (showClearConfirm) {
         return;
       }
@@ -4304,16 +4559,15 @@ export default function PosLandingPages() {
                   <div className="space-y-3">
                     {cart.map((item) => {
                       const pricingBreakdown = item.pricingBreakdown ?? [];
-                      const calculatedLineTotal =
-                        Number(
-                          item.calculatedAmount ??
-                            item.total_amount ??
-                            item.final_price,
-                        ) || 0;
+                      const storedNetTotal =
+                        Number(item.total_amount ?? item.final_price) || 0;
                       const lineTotal =
-                        calculatedLineTotal > 0
-                          ? calculatedLineTotal
-                          : item.price * item.qty;
+                        Number(item.regularAmount) ||
+                        (storedNetTotal > 0 &&
+                        Number(item.discount_amount ?? item.discount ?? 0) > 0
+                          ? storedNetTotal +
+                            Number(item.discount_amount ?? item.discount ?? 0)
+                          : item.price * item.qty);
                       const unitLabel =
                         item.unitName ?? item.unit_code ?? item.unit ?? "";
                       const lineDiscount = Math.min(
@@ -4323,7 +4577,10 @@ export default function PosLandingPages() {
                         ),
                         lineTotal,
                       );
-                      const lineNetTotal = Math.max(lineTotal - lineDiscount, 0);
+                      const lineNetTotal =
+                        storedNetTotal > 0
+                          ? storedNetTotal
+                          : Math.max(lineTotal - lineDiscount, 0);
 
                       return (
                       <div
@@ -4386,17 +4643,18 @@ export default function PosLandingPages() {
                                     ? "แก้ไขส่วนลดรายการนี้"
                                     : "ใส่ส่วนลดรายการนี้"
                                 }
-                                className={`transition ${
+                                aria-label={
                                   lineDiscount > 0
-                                    ? "text-[#1d6fd8] hover:text-[#1557ad]"
-                                    : "text-slate-400 hover:text-[#1d6fd8]"
+                                    ? "แก้ไขส่วนลดรายการนี้"
+                                    : "ใส่ส่วนลดรายการนี้"
+                                }
+                                className={`flex h-7 w-7 items-center justify-center rounded-lg border transition ${
+                                  lineDiscount > 0
+                                    ? "border-blue-200 bg-blue-50 text-[#1d6fd8] hover:border-blue-300 hover:bg-blue-100"
+                                    : "border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-[#1d6fd8]"
                                 }`}
                               >
-                                {lineDiscount > 0 ? (
-                                  <IconPencil size={18} />
-                                ) : (
-                                  <IconDiscount size={18} />
-                                )}
+                                <IconDiscount size={16} stroke={2.2} />
                               </button>
                             ) : null}
                             <button
@@ -4779,46 +5037,8 @@ export default function PosLandingPages() {
           />
         ) : null}
 
-        {/* Shortcuts Modal */}
         {showShortcuts ? (
-          <div className="fixed inset-0 z-[80] grid place-items-center bg-black/40 p-4">
-            <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl">
-              <h3 className="text-lg font-bold text-slate-900">คีย์ลัด</h3>
-              <div className="mt-3 space-y-2 text-sm text-slate-600">
-                <p>
-                  <span className="font-bold text-slate-900">F2</span> เปิดรายการพักบิล / พักบิล
-                </p>
-                <p>
-                  <span className="font-bold text-slate-900">F3</span> เลือกลูกค้า
-                </p>
-                <p>
-                  <span className="font-bold text-slate-900">F4</span> ชำระเงิน
-                </p>
-                <p>
-                  <span className="font-bold text-slate-900">F6</span> ลบรายการที่เลือก
-                </p>
-                <p>
-                  <span className="font-bold text-slate-900">F7</span> ลบรายการสินค้าทั้งหมด
-                </p>
-                <p>
-                  <span className="font-bold text-slate-900">F8</span> ใส่ส่วนลดรายการที่เลือก
-                </p>
-                <p>
-                  <span className="font-bold text-slate-900">+</span> เพิ่มจำนวนสินค้า
-                </p>
-                <p>
-                  <span className="font-bold text-slate-900">-</span> ลดจำนวนสินค้า
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowShortcuts(false)}
-                className="mt-4 h-10 w-full rounded-lg bg-slate-900 text-sm font-bold text-white"
-              >
-                ปิด
-              </button>
-            </div>
-          </div>
+          <KeyboardShortcutsPopup onClose={() => setShowShortcuts(false)} />
         ) : null}
 
         {/* Clear Cart Confirmation Modal */}

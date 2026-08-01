@@ -58,10 +58,13 @@ export function ApiPathSetting({ onBack, onExit }: ApiPathSettingProps) {
 
   useEffect(() => {
     const handleEscKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onBack();
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      onBack();
     };
-    window.addEventListener("keydown", handleEscKey);
-    return () => window.removeEventListener("keydown", handleEscKey);
+    window.addEventListener("keydown", handleEscKey, true);
+    return () => window.removeEventListener("keydown", handleEscKey, true);
   }, [onBack]);
 
   // ✅ ฟังก์ชันตรวจสอบสถานะ API

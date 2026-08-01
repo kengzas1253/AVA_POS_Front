@@ -27,6 +27,7 @@ import CustomerPickerPopup, {
   type PosCustomer,
 } from "./CustomerPickerPopup";
 import HeldBillsPopup, { type HeldBillSummary } from "./HeldBillsPopup";
+import KeyboardShortcutsPopup from "./KeyboardShortcutsPopup";
 import POSPayment from "./POSPayment";
 import POSSettingPage from "./POSSettingPage";
 import ProductLandingpage from "./ProductLandingpage";
@@ -710,6 +711,7 @@ export default function POSScanTablePage() {
     null,
   );
   const [showCustomerPopup, setShowCustomerPopup] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [showHeldBillsModal, setShowHeldBillsModal] = useState(false);
   const [showHoldBillModal, setShowHoldBillModal] = useState(false);
@@ -1525,7 +1527,28 @@ export default function POSScanTablePage() {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (currentPage !== "pos") return;
+
+      if (event.key === "Escape" && showShortcuts) {
+        event.preventDefault();
+        setShowShortcuts(false);
+        focusScannerInput();
+        return;
+      }
+
+      if (showShortcuts) return;
+
       if (showClearConfirm || showHeldBillsModal || showHoldBillModal) return;
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        const shouldQuit = window.confirm("คุณต้องการปิดโปรแกรมหรือไม่?");
+        if (shouldQuit) {
+          void window.electronAPI.quitApp();
+        } else {
+          focusScannerInput();
+        }
+        return;
+      }
 
       const isScannerInput = event.target === scannerInputRef.current;
       const isManualBarcodeInput = event.target === barcodeInputRef.current;
@@ -1591,6 +1614,7 @@ export default function POSScanTablePage() {
     showClearConfirm,
     showHeldBillsModal,
     showHoldBillModal,
+    showShortcuts,
   ]);
 
   useEffect(() => {
@@ -2196,8 +2220,10 @@ export default function POSScanTablePage() {
             </button>
             <button
               type="button"
+              onClick={() => setShowShortcuts(true)}
               className="flex h-8 w-8 items-center justify-center rounded-lg text-white/90 transition hover:bg-white/15"
               title="คีย์ลัด"
+              aria-label="คีย์ลัด"
             >
               <IconKeyboard size={18} />
             </button>
@@ -2523,6 +2549,15 @@ export default function POSScanTablePage() {
           onClose={closeCustomerPopup}
           onRefresh={fetchCustomerList}
           onSelectCustomer={selectCustomer}
+        />
+      ) : null}
+
+      {showShortcuts ? (
+        <KeyboardShortcutsPopup
+          onClose={() => {
+            setShowShortcuts(false);
+            focusScannerInput();
+          }}
         />
       ) : null}
     </div>

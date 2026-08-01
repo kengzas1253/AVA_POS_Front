@@ -2,6 +2,7 @@ import { authorizedFetch, getApiErrorMessage } from "./StoreSetting";
 
 export interface CheckDiscountRequest {
   product_id: string;
+  qty: number;
   machine_id: string;
   discount_amount: number;
 }

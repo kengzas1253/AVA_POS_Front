@@ -5,9 +5,9 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconDeviceDesktop,
+  IconPercentage,
   IconPrinter,
   IconReceipt,
-  IconSettings,
   IconUserCog,
   IconUsersGroup,
 } from "@tabler/icons-react";
@@ -33,7 +33,7 @@ export default function Settingbar({
 }: SettingbarProps) {
   const menuItems = [
     { id: "storeInfo", label: "ข้อมูลร้านค้า", icon: IconBuildingStore, title: "ข้อมูลร้านค้า" },
-    { id: "tax", label: "ภาษี", icon: IconSettings, title: "ตั้งค่าภาษี" },
+    { id: "tax", label: "ภาษี", icon: IconPercentage, title: "ตั้งค่าภาษี" },
     { id: "payment", label: "ช่องทางชำระเงิน", icon: IconCashBanknote, title: "ช่องทางชำระเงิน" },
     { id: "receipt", label: "ใบเสร็จ", icon: IconReceipt, title: "ตั้งค่าใบเสร็จ" },
     { id: "printer", label: "เครื่องพิมพ์", icon: IconPrinter, title: "ตั้งค่าเครื่องพิมพ์" },

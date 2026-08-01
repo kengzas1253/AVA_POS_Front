@@ -83,7 +83,7 @@ interface PromotionApiItem {
   can_combine?: boolean;
   status?: string;
   rules?: PromotionRule[];
-  products?: Product[];
+  products?: Array<Product | { product?: Product; product_id?: number | string }>;
   product_ids?: Array<number | string>;
 }
 
@@ -138,12 +138,28 @@ const unwrapList = <T,>(data: unknown): T[] => {
 };
 
 const getProductName = (product: Product) => product.product_name || product.name || `สินค้า #${product.id}`;
+const getProductBarcode = (product: Product) => String(product.barcode ?? "").trim();
+const getProductCodeLine = (product: Product) => {
+  const barcode = getProductBarcode(product);
+  const sku = String(product.sku ?? "").trim();
+  if (barcode && sku) return `บาร์โค้ด: ${barcode} · SKU: ${sku}`;
+  if (barcode) return `บาร์โค้ด: ${barcode}`;
+  if (sku) return `SKU: ${sku}`;
+  return "ไม่มีบาร์โค้ด";
+};
+const formatProductForPreview = (product: Product) => `${getProductName(product)}\n${getProductCodeLine(product)}`;
 
 const normalizeProduct = (product: Product): Product => ({
   ...product,
   product_name: getProductName(product),
   sale_price: Number(product.sale_price ?? 0),
 });
+
+const normalizePromotionProduct = (item: Product | { product?: Product; product_id?: number | string }): Product => {
+  const nestedProduct = "product" in item ? item.product : undefined;
+  if (nestedProduct && typeof nestedProduct === "object") return normalizeProduct(nestedProduct as Product);
+  return normalizeProduct(item as Product);
+};
 
 const formatDateForInput = (value?: string | null) => value ? value.slice(0, 10) : "";
 const toDateTime = (value: string, endOfDay = false) =>
@@ -171,10 +187,11 @@ const mapPromotion = (promo: PromotionApiItem): Promotion => ({
   name: promo.promotion_name ?? "",
   type: promo.promotion_type ?? "FIXED_BUNDLE_PRICE",
   detail: describePromotion(promo),
-  products: promo.products ?? (promo.product_ids ?? []).map((id) => ({
+  products: promo.products?.map(normalizePromotionProduct) ?? (promo.product_ids ?? []).map((id) => ({
     id,
     product_name: `สินค้า #${id}`,
     sku: "",
+    barcode: "",
     sale_price: 0,
   })),
   dateStart: formatDateForInput(promo.start_date),
@@ -401,11 +418,10 @@ export default function PromotionPage() {
   // ── Preview ──
   const buildPreview = (): string => {
     if (!selectedType) return "";
-    const cfg = PROMO_CONFIG[selectedType];
     const prodStr =
       selectedProducts.length === 0 ? "" :
-      selectedProducts.length <= 2 ? selectedProducts.map(getProductName).join(", ") :
-      `${getProductName(selectedProducts[0])} +${selectedProducts.length - 1} รายการ`;
+      selectedProducts.length <= 2 ? selectedProducts.map(formatProductForPreview).join("\n\n") :
+      `${formatProductForPreview(selectedProducts[0])}\n+${selectedProducts.length - 1} รายการ`;
 
     if (selectedType === "FIXED_BUNDLE_PRICE") {
       if (!bundleQty || !bundlePrice) return "";
@@ -524,10 +540,11 @@ export default function PromotionPage() {
       setTierCounter(Math.max(rules.length + 1, 2));
       setPctQty(firstRule?.min_qty ? String(firstRule.min_qty) : "");
       setPctDiscount(firstRule?.discount_percent ? String(firstRule.discount_percent) : "");
-      setSelectedProducts(source.products ?? (source.product_ids ?? []).map((productId) => ({
+      setSelectedProducts(source.products?.map(normalizePromotionProduct) ?? (source.product_ids ?? []).map((productId) => ({
         id: productId,
         product_name: `สินค้า #${productId}`,
         sku: "",
+        barcode: "",
         sale_price: 0,
       })));
       setSearchTerm(""); setSearchResults([]); setShowDropdown(false); setShowBarcodeInput(false); setBarcodeValue(""); setBarcodeError(null);
@@ -901,7 +918,7 @@ export default function PromotionPage() {
                                 </div>
                                 <div className="min-w-0 flex-1">
                                   <p className="truncate text-sm font-medium text-slate-700">{getProductName(p)}</p>
-                                  <p className="text-xs text-slate-400">{p.sku}</p>
+                                  <p className="truncate text-xs text-slate-400">{getProductCodeLine(p)}</p>
                                 </div>
                                 <span className="shrink-0 text-sm font-medium text-[#1d6fd8]">฿{Number(p.sale_price ?? 0).toLocaleString()}</span>
                               </button>
@@ -948,15 +965,18 @@ export default function PromotionPage() {
                     {selectedProducts.length === 0 ? (
                       <p className="text-xs text-slate-400">ยังไม่มีสินค้า — ค้นหาหรือสแกนบาร์โค้ดเพื่อเพิ่ม</p>
                     ) : (
-                      <div className="flex flex-wrap gap-2">
+                      <div className="grid gap-2">
                         {selectedProducts.map((p) => (
-                          <span key={p.id} className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 py-1 pl-2.5 pr-1.5 text-xs font-medium text-slate-600">
-                            <IconBox size={11} className="text-slate-400" />
-                            {getProductName(p)}
+                          <span key={p.id} className="flex items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs text-slate-600">
+                            <IconBox size={12} className="mt-0.5 shrink-0 text-slate-400" />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate font-medium text-slate-700">{getProductName(p)}</span>
+                              <span className="block truncate font-mono text-[11px] text-slate-400">{getProductCodeLine(p)}</span>
+                            </span>
                             <button
                               type="button"
                               onClick={() => removeProduct(p.id)}
-                              className="flex h-4 w-4 items-center justify-center rounded-full text-slate-400 hover:bg-red-100 hover:text-red-500"
+                              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-slate-400 hover:bg-red-100 hover:text-red-500"
                               aria-label={`ลบ ${getProductName(p)}`}
                             >
                               <IconX size={10} />
