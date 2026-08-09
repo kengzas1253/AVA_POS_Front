@@ -68,6 +68,12 @@ interface PaginatedProductsResponse {
   };
 }
 
+interface ProductStockResponse {
+  productId?: number | string;
+  stockBaseQty?: number | string | null;
+  minStockBaseQty?: number | string | null;
+}
+
 interface Unit {
   id: number | string;
   unit_code: string;
@@ -495,11 +501,46 @@ const createOpeningStock = async (payload: OpeningStockPayload): Promise<void> =
   }
 };
 
+const getProductStock = async (
+  productId: number | string,
+): Promise<ProductStockResponse | null> => {
+  const response = await authorizedFetch(`/stocks/${productId}`);
+
+  if (response.status === 404) return null;
+
+  if (!response.ok) {
+    const message = await getApiErrorMessage(
+      response,
+      `Check product stock failed (${response.status})`,
+    );
+    throw new Error(message);
+  }
+
+  return (await response.json().catch(() => null)) as ProductStockResponse | null;
+};
+
+const ensureProductStockExists = async (
+  productId: number | string,
+  openingStockPayload?: OpeningStockPayload,
+): Promise<void> => {
+  const stock = await getProductStock(productId);
+  if (stock) return;
+
+  if (!openingStockPayload) {
+    throw new Error("Product stock not found. Cannot update minimum stock.");
+  }
+
+  await createOpeningStock(openingStockPayload);
+};
+
 const updateMinStock = async (
   productId: number | string,
   minStockBaseQty: number,
   storeId: number,
+  openingStockPayload?: OpeningStockPayload,
 ): Promise<void> => {
+  await ensureProductStockExists(productId, openingStockPayload);
+
   const response = await authorizedFetch(`/stocks/${productId}/min-stock`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -1122,6 +1163,9 @@ export default function ProductLandingpage() {
   const [resolvedImageUrls, setResolvedImageUrls] = useState<
     Record<string, string>
   >({});
+  const [productStockById, setProductStockById] = useState<
+    Record<string, ProductStockResponse | null>
+  >({});
 
   // url รูปเดิมของสินค้าที่กำลังแก้ไข (ใช้เทียบเพื่อรู้ว่าต้องลบรูปเดิมออกจาก server หรือไม่)
   const [originalImageUrl, setOriginalImageUrl] = useState<string | null>(
@@ -1238,6 +1282,7 @@ export default function ProductLandingpage() {
     setProducts([]);
     setPage(1);
     setHasMore(true);
+    setProductStockById({});
     return loadProducts({
       pageToLoad: 1,
       searchKeyword: debouncedSearch,
@@ -1295,6 +1340,7 @@ export default function ProductLandingpage() {
   useEffect(() => {
     setProducts([]);
     setResolvedImageUrls({});
+    setProductStockById({});
     setPage(1);
     setHasMore(true);
     void loadProducts({
@@ -1320,6 +1366,48 @@ export default function ProductLandingpage() {
   }, [categories, editingProductId, form.category_id, isModalOpen]);
 
   // เมื่อรายการสินค้าเปลี่ยน ให้แปลง image_url ของแต่ละสินค้าเป็น URL เต็มสำหรับแสดงผล
+  useEffect(() => {
+    let isCancelled = false;
+
+    const loadVisibleStocks = async () => {
+      const productsToLoad = products.filter(
+        (product) =>
+          product.track_stock &&
+          productStockById[String(product.id)] === undefined,
+      );
+
+      if (productsToLoad.length === 0) return;
+
+      const entries = await Promise.all(
+        productsToLoad.map(async (product) => {
+          try {
+            const stock = await getProductStock(product.id);
+            return [String(product.id), stock] as const;
+          } catch (err) {
+            console.error("Error fetching product stock:", err);
+            return [String(product.id), null] as const;
+          }
+        }),
+      );
+
+      if (isCancelled) return;
+
+      setProductStockById((current) => {
+        const next = { ...current };
+        entries.forEach(([id, stock]) => {
+          next[id] = stock;
+        });
+        return next;
+      });
+    };
+
+    void loadVisibleStocks();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [productStockById, products]);
+
   useEffect(() => {
     let isCancelled = false;
 
@@ -2246,12 +2334,10 @@ export default function ProductLandingpage() {
         );
       }
 
-      if (!isEditing && !isService && form.track_stock) {
-        const [deviceId, storeId] = await Promise.all([
-          getDeviceId(),
-          getCurrentStoreId(),
-        ]);
-        await createOpeningStock({
+      if (!isService && form.track_stock) {
+        const storeId = await getCurrentStoreId();
+        const deviceId = await getDeviceId();
+        const openingStockPayload: OpeningStockPayload = {
           productId: savedProductId,
           unitId: Number(baseUnitItem.unitId) || baseUnitItem.unitId,
           storeId,
@@ -2260,15 +2346,16 @@ export default function ProductLandingpage() {
           referenceType: "MANUAL",
           referenceId: createStockReferenceId(),
           reasonCode: "OPENING",
-          note: "ตั้งยอดเริ่มต้น",
-        });
+          note: "\u0e15\u0e31\u0e49\u0e07\u0e22\u0e2d\u0e14\u0e40\u0e23\u0e34\u0e48\u0e21\u0e15\u0e49\u0e19",
+        };
+
         await updateMinStock(
           savedProductId,
           Number(form.min_stock_qty) || 0,
           storeId,
+          openingStockPayload,
         );
       }
-
       if (isUnitLinkingEnabled) {
         const refreshedUnits = await getProductUnits(savedProductId).catch(() => []);
         const refreshedFormUnits = refreshedUnits.map((item, index) =>
@@ -2504,6 +2591,20 @@ export default function ProductLandingpage() {
                 (option) => option.value === product.price_mode,
               );
               const imageSrc = resolvedImageUrls[String(product.id)];
+              const productStock = productStockById[String(product.id)];
+              const stockBaseQty =
+                productStock?.stockBaseQty !== undefined &&
+                productStock.stockBaseQty !== null
+                  ? Number(productStock.stockBaseQty)
+                  : null;
+              const stockDisplay =
+                stockBaseQty !== null && Number.isFinite(stockBaseQty)
+                  ? stockBaseQty.toLocaleString(undefined, {
+                      maximumFractionDigits: 3,
+                    })
+                  : productStock === undefined
+                    ? "..."
+                    : "-";
               const isDeletingThis = deletingProductId === product.id;
 
               return (
@@ -2584,7 +2685,7 @@ export default function ProductLandingpage() {
                     </span>
                     {product.track_stock ? (
                       <span className="rounded-full bg-white px-2.5 py-1 text-slate-500">
-                        คงเหลือ {product.stock_qty}
+                        คงเหลือ {stockDisplay}
                       </span>
                     ) : null}
                   </div>

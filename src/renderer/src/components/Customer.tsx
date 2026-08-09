@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import {
   IconMail,
   IconPhone,
@@ -27,6 +27,7 @@ interface Customer {
   mobile?: string | null;
   email?: string | null;
   address?: string | null;
+  tax_id?: string | null;
   created_at?: string;
   total_purchase_amount?: number;
   points_balance?: number;
@@ -35,12 +36,21 @@ interface Customer {
   [key: string]: unknown;
 }
 
+interface CustomersPaginationResponse {
+  items: Customer[];
+  total: number;
+  page: number;
+  limit: number;
+  total_pages: number;
+}
+
 const EMPTY_FORM = {
   customer_code: "",
   customer_name: "",
   phone: "",
   email: "",
   address: "",
+  tax_id: "",
 };
 
 const getApiBaseUrl = async (): Promise<string> => {
@@ -156,6 +166,11 @@ export default function Customer() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [limit] = useState(20);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
@@ -171,6 +186,7 @@ export default function Customer() {
     phone: "",
     email: "",
     address: "",
+    tax_id: "",
   });
   const [isEditing, setIsEditing] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
@@ -199,52 +215,53 @@ export default function Customer() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  const fetchCustomers = async () => {
+  const fetchCustomers = useCallback(async () => {
     setIsLoading(true);
     setError(null);
 
     try {
-      const response = await authorizedFetch("/customers");
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: String(limit),
+      });
+      const keyword = debouncedSearch.trim();
+
+      if (keyword) {
+        params.set("search", keyword);
+      }
+
+      const response = await authorizedFetch(`/customers?${params.toString()}`);
 
       if (!response.ok) {
         throw new Error(`โหลดข้อมูลลูกค้าไม่สำเร็จ (${response.status})`);
       }
 
-      const data: Customer[] | { data?: Customer[] } = await response.json();
-      const list = Array.isArray(data) ? data : data.data ?? [];
-      setCustomers(list);
+      const data: CustomersPaginationResponse = await response.json();
+      setCustomers(Array.isArray(data.items) ? data.items : []);
+      setTotal(typeof data.total === "number" ? data.total : 0);
+      setTotalPages(
+        typeof data.total_pages === "number" ? data.total_pages : 0,
+      );
     } catch (err) {
       console.error("Error fetching customers:", err);
       setError("ไม่สามารถโหลดข้อมูลลูกค้าได้ กรุณาลองใหม่อีกครั้ง");
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [debouncedSearch, limit, page]);
 
   useEffect(() => {
     void fetchCustomers();
-  }, []);
+  }, [fetchCustomers]);
 
-  const filteredCustomers = useMemo(() => {
-    const keyword = searchTerm.trim().toLowerCase();
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(searchTerm.trim());
+      setPage(1);
+    }, 400);
 
-    if (!keyword) {
-      return customers;
-    }
-
-    return customers.filter((customer) =>
-      [
-        getCustomerName(customer),
-        customer.customer_code ?? "",
-        getCustomerPhone(customer),
-        customer.email ?? "",
-        customer.address ?? "",
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(keyword),
-    );
-  }, [customers, searchTerm]);
+    return () => window.clearTimeout(timer);
+  }, [searchTerm]);
 
   // ฟังก์ชันเปิด Modal เพิ่ม
   const openModal = () => {
@@ -278,6 +295,7 @@ export default function Customer() {
       phone: getCustomerPhone(customer) !== "-" ? getCustomerPhone(customer) : "",
       email: customer.email ?? "",
       address: customer.address ?? "",
+      tax_id: customer.tax_id ?? "",
     });
     setEditError(null);
     setIsEditModalOpen(true);
@@ -342,6 +360,7 @@ export default function Customer() {
           phone_number: editForm.phone.trim() || undefined,
           email: editForm.email.trim() || undefined,
           address: editForm.address.trim() || undefined,
+          tax_id: editForm.tax_id.trim() || undefined,
         }),
       });
 
@@ -406,6 +425,7 @@ export default function Customer() {
           phone_number: form.phone.trim() || undefined,
           email: form.email.trim() || undefined,
           address: form.address.trim() || undefined,
+          tax_id: form.tax_id.trim() || undefined,
           total_purchase_amount: 0,
           points_balance: 0,
           first_purchase_at: null,
@@ -493,7 +513,7 @@ export default function Customer() {
   // คอมโพเนนต์แสดงข้อมูลแบบ List (จอกว้าง)
   const renderListView = () => (
     <ul className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-3">
-      {filteredCustomers.map((customer) => (
+      {customers.map((customer) => (
         <li
           key={customer.id}
           className="flex min-w-0 flex-col gap-2 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3"
@@ -543,6 +563,12 @@ export default function Customer() {
               <div className="flex items-center gap-1.5 text-slate-500">
                 <IconMail size={14} className="shrink-0" />
                 <span className="truncate">{customer.email}</span>
+              </div>
+            ) : null}
+            {customer.tax_id ? (
+              <div className="flex items-center gap-1.5 text-slate-500">
+                <span className="shrink-0 text-xs font-semibold">Tax</span>
+                <span className="truncate">{customer.tax_id}</span>
               </div>
             ) : null}
             <div className="flex items-center gap-1.5 text-emerald-600">
@@ -596,7 +622,7 @@ export default function Customer() {
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
-          {filteredCustomers.map((customer) => (
+          {customers.map((customer) => (
             <tr key={customer.id} className="hover:bg-slate-50">
               <td className="px-3 py-2.5 text-xs font-medium text-[#1d6fd8]">
                 {customer.customer_code || "-"}
@@ -726,11 +752,11 @@ export default function Customer() {
               ลองอีกครั้ง
             </button>
           </div>
-        ) : filteredCustomers.length === 0 ? (
+        ) : customers.length === 0 ? (
           <div className="flex h-40 flex-col items-center justify-center gap-2 text-center text-slate-400">
             <IconUsers size={34} className="text-slate-300" />
             <p className="text-sm">
-              {customers.length === 0
+              {debouncedSearch.length === 0
                 ? "ยังไม่มีลูกค้า กดปุ่มเพิ่มลูกค้าเพื่อเริ่มต้น"
                 : "ไม่พบลูกค้าที่ตรงกับคำค้นหา"}
             </p>
@@ -742,7 +768,32 @@ export default function Customer() {
 
             {/* แสดงจำนวนรายการทั้งหมด */}
             <div className="mt-4 text-center text-xs text-slate-400">
-              แสดงทั้งหมด {filteredCustomers.length} รายการ
+              แสดง {customers.length} จาก {total} รายการ
+            </div>
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-2 text-xs text-slate-500">
+              <button
+                type="button"
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+                disabled={page <= 1 || isLoading}
+                className="rounded-lg border border-slate-200 px-3 py-1.5 text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                ก่อนหน้า
+              </button>
+              <span>
+                หน้า {page} / {Math.max(totalPages, 1)}
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  setPage((current) =>
+                    totalPages > 0 ? Math.min(totalPages, current + 1) : current,
+                  )
+                }
+                disabled={page >= totalPages || isLoading}
+                className="rounded-lg border border-slate-200 px-3 py-1.5 text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                ถัดไป
+              </button>
             </div>
           </>
         )}
@@ -829,6 +880,21 @@ export default function Customer() {
                     value={form.email}
                     onChange={(event) => updateForm("email", event.target.value)}
                     placeholder="customer@example.com"
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-slate-600">
+                    Tax ID
+                  </label>
+                  <input
+                    type="text"
+                    value={form.tax_id}
+                    onChange={(event) =>
+                      updateForm("tax_id", event.target.value)
+                    }
+                    placeholder="เลขประจำตัวผู้เสียภาษี"
                     className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
                   />
                 </div>
@@ -958,6 +1024,21 @@ export default function Customer() {
                       updateEditForm("email", event.target.value)
                     }
                     placeholder="customer@example.com"
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-slate-600">
+                    Tax ID
+                  </label>
+                  <input
+                    type="text"
+                    value={editForm.tax_id}
+                    onChange={(event) =>
+                      updateEditForm("tax_id", event.target.value)
+                    }
+                    placeholder="เลขประจำตัวผู้เสียภาษี"
                     className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
                   />
                 </div>

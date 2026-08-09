@@ -2610,6 +2610,7 @@ export default function POSScanTablePage() {
         total={totalAmount}
         onBack={() => setCurrentPage("pos")}
         onPaymentComplete={() => {
+          clearSelectedCustomer();
           clearAllItems();
           setCurrentPage("pos");
         }}

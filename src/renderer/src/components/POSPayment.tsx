@@ -1,12 +1,24 @@
 import React, { useCallback, useEffect, useState, useRef } from "react";
-import { authorizedFetch, type StoreData } from "./StoreSetting";
+import { authorizedFetch, getApiErrorMessage, type StoreData } from "./StoreSetting";
 import QRCode from "qrcode";
 import generatePayload from "promptpay-qr";
+import { toJpeg } from "html-to-image";
+import ReceiptDocument, { type ReceiptPaperSize, type SaleReceipt } from "./ReceiptDocument";
 
 interface POSPaymentCartItem {
   id?: number | string;
+  product_id?: number | string | null;
+  productId?: number | string | null;
+  product_unit_id?: number | string | null;
+  productUnitId?: number | string | null;
   name: string;
   product_name?: string;
+  barcode?: string | null;
+  barcode_snapshot?: string | null;
+  unit_code?: string | null;
+  unit_name?: string | null;
+  unit_name_snapshot?: string | null;
+  price_mode?: string | null;
   price: number;
   qty: number;
   discount?: number;
@@ -132,6 +144,75 @@ interface MixedPaymentLine {
   reference?: string;
 }
 
+interface StoredPosDevice {
+  machine_id?: unknown;
+  machineId?: unknown;
+  device_name?: unknown;
+  deviceName?: unknown;
+  pos_device?: {
+    machine_id?: unknown;
+    machineId?: unknown;
+    device_name?: unknown;
+    deviceName?: unknown;
+  };
+}
+
+interface StoredUser {
+  full_name?: unknown;
+  username?: unknown;
+}
+
+interface StoredSelectedCustomer {
+  id?: unknown;
+  customer_id?: unknown;
+}
+
+interface SaleRequestItem {
+  product_unit_id?: number | string;
+  product_id?: number | string;
+  barcode?: string;
+  quantity: string;
+  discount_amount?: string;
+  entered_unit_price?: string;
+}
+
+interface SaleRequestPayment {
+  payment_type_id: number | string;
+  amount: string;
+  reference_no?: string;
+}
+
+interface SaleRequestPayload {
+  idempotency_key: string;
+  machine_id: string;
+  store_id: number;
+  customer_id?: number | string;
+  items: SaleRequestItem[];
+  payments: SaleRequestPayment[];
+  bill_discount_amount: string;
+  note: string;
+}
+
+interface SaleApiResponse {
+  id?: number | string;
+  sale_no?: string;
+  data?: {
+    id?: number | string;
+    sale_no?: string;
+    receipt?: SaleReceipt;
+  };
+  receipt?: SaleReceipt;
+  message?: string | string[];
+}
+
+interface ReceiptApiResponse {
+  data?: {
+    receipt?: SaleReceipt | null;
+  };
+  receipt?: SaleReceipt | null;
+  message?: string | string[];
+}
+
 const formatBaht = (value: number): string => `฿${value.toFixed(2)}`;
 
 const getCartItemName = (item: POSPaymentCartItem): string =>
@@ -140,6 +221,69 @@ const getCartItemName = (item: POSPaymentCartItem): string =>
 const getCartItemTotal = (item: POSPaymentCartItem): number => {
   const fallback = Number(item.price || 0) * Number(item.qty || 0);
   return Number(item.final_price ?? item.total_amount ?? fallback) || fallback;
+};
+
+const toDecimalString = (value: number | string | null | undefined, fallback = 0): string => {
+  const numeric = Number(value ?? fallback);
+  return Number.isFinite(numeric) ? numeric.toFixed(2) : fallback.toFixed(2);
+};
+
+const toQuantityString = (value: number | string | null | undefined): string => {
+  const numeric = Number(value ?? 0);
+  return Number.isFinite(numeric) ? String(numeric) : "0";
+};
+
+const getStoredMachineId = (storedDevice: unknown): string | null => {
+  if (!storedDevice || typeof storedDevice !== "object") return null;
+  const device = storedDevice as StoredPosDevice;
+  const machineId =
+    device.machine_id ??
+    device.machineId ??
+    device.pos_device?.machine_id ??
+    device.pos_device?.machineId;
+  return typeof machineId === "string" && machineId.trim() ? machineId.trim() : null;
+};
+
+const getStoredDeviceName = (storedDevice: unknown): string | null => {
+  if (!storedDevice || typeof storedDevice !== "object") return null;
+  const device = storedDevice as StoredPosDevice;
+  const deviceName =
+    device.device_name ??
+    device.deviceName ??
+    device.pos_device?.device_name ??
+    device.pos_device?.deviceName;
+  return typeof deviceName === "string" && deviceName.trim() ? deviceName.trim() : null;
+};
+
+const getStoredCashierName = (storedUser: unknown): string | null => {
+  if (!storedUser || typeof storedUser !== "object") return null;
+  const user = storedUser as StoredUser;
+  const cashierName = user.full_name ?? user.username;
+  return typeof cashierName === "string" && cashierName.trim() ? cashierName.trim() : null;
+};
+
+const getStoredCustomerId = (storedCustomer: unknown): number | string | null => {
+  if (!storedCustomer || typeof storedCustomer !== "object") return null;
+  const customer = storedCustomer as StoredSelectedCustomer;
+  const customerId = customer.customer_id ?? customer.id;
+  if (typeof customerId === "number" && Number.isFinite(customerId) && customerId > 0) {
+    return customerId;
+  }
+  if (typeof customerId !== "string" || !customerId.trim()) return null;
+
+  const trimmedCustomerId = customerId.trim();
+  const numericCustomerId = Number(trimmedCustomerId);
+  return Number.isFinite(numericCustomerId) && numericCustomerId > 0
+    ? numericCustomerId
+    : trimmedCustomerId;
+};
+
+const makeIdempotencyKey = (storeId?: number): string => {
+  const randomPart =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `POS-${storeId ?? 1}-${randomPart}`;
 };
 
 const getQuickCashAmounts = (total: number): number[] => {
@@ -250,9 +394,19 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [storeData, setStoreData] = useState<StoreData | null>(null);
   const [storeError, setStoreError] = useState<string | null>(null);
+  const [apiBaseUrl, setApiBaseUrl] = useState("");
   const [paymentTypes, setPaymentTypes] = useState<PaymentType[]>([]);
   const [paymentTypesError, setPaymentTypesError] = useState<string | null>(null);
   const [showSplitPopup, setShowSplitPopup] = useState(false);
+  const [receiptPaperSize] = useState<ReceiptPaperSize>("A4");
+  const [showReceiptExportOptions, setShowReceiptExportOptions] = useState(false);
+  const [receiptActionMessage, setReceiptActionMessage] = useState<string | null>(null);
+  const [isReceiptActionWorking, setIsReceiptActionWorking] = useState(false);
+  const [isSubmittingSale, setIsSubmittingSale] = useState(false);
+  const [saleResult, setSaleResult] = useState<{ id?: number | string; saleNo?: string; receipt?: SaleReceipt } | null>(null);
+  const [currentMachineId, setCurrentMachineId] = useState<string | null>(null);
+  const [currentMachineName, setCurrentMachineName] = useState<string | null>(null);
+  const [currentCashierName, setCurrentCashierName] = useState<string | null>(null);
   
   // ✅ Mixed payment state
   const [mixedPayments, setMixedPayments] = useState<MixedPaymentLine[]>([
@@ -265,6 +419,8 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   // ✅ Ref สำหรับ popup container
   const popupContainerRef = useRef<HTMLDivElement>(null);
   const paymentErrorButtonRef = useRef<HTMLButtonElement>(null);
+  const receiptDocumentRef = useRef<HTMLDivElement | null>(null);
+  const idempotencyKeyRef = useRef<string | null>(null);
 
   // ✅ QR code state
   const [splitQrDataUrl, setSplitQrDataUrl] = useState<string | null>(null);
@@ -333,6 +489,8 @@ const POSPayment: React.FC<POSPaymentProps> = ({
 
   // ---------- popup ----------
   const showPopup = (change: number) => {
+    setShowReceiptExportOptions(false);
+    setReceiptActionMessage(null);
     setPopupChange(change);
   };
 
@@ -351,12 +509,354 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   }, [focusCashInput]);
 
   const confirmSuccessfulPayment = () => {
+    idempotencyKeyRef.current = null;
     closePopup();
     onPaymentComplete?.();
   };
 
+  const buildSaleItems = (): SaleRequestItem[] =>
+    cartItems.map((item) => {
+      const payloadItem: SaleRequestItem = {
+        quantity: toQuantityString(item.qty),
+      };
+      const productUnitId = item.productUnitId ?? item.product_unit_id;
+      const productId = item.product_id ?? item.productId;
+      const barcode = item.barcode ?? item.barcode_snapshot;
+      const discountAmount = Number(item.discount_amount ?? item.discount ?? 0);
+
+      if (productUnitId != null && String(productUnitId).trim()) {
+        payloadItem.product_unit_id = productUnitId;
+      }
+      if (productId != null && String(productId).trim()) {
+        payloadItem.product_id = productId;
+      }
+      if (barcode?.trim()) {
+        payloadItem.barcode = barcode.trim();
+      }
+      if (discountAmount > 0) {
+        payloadItem.discount_amount = toDecimalString(discountAmount);
+      }
+      if (item.price_mode === "OPEN_PRICE") {
+        payloadItem.entered_unit_price = toDecimalString(item.price);
+      }
+
+      return payloadItem;
+    });
+
+  const getPaymentTypeId = (paymentCode: string): number | string | null => {
+    const paymentType = activePaymentTypes.find((item) => item.paymentCode === paymentCode);
+    return paymentType?.id ?? null;
+  };
+
+  const buildSinglePayment = (paymentType: PaymentType | undefined, amount: number, reference: string): SaleRequestPayment => {
+    if (!paymentType?.id) {
+      throw new Error("ไม่พบประเภทการชำระเงิน กรุณาตรวจสอบการตั้งค่าวิธีชำระเงิน");
+    }
+
+    return {
+      payment_type_id: paymentType.id,
+      amount: toDecimalString(amount),
+      reference_no: reference,
+    };
+  };
+
+  const buildSalePayload = async (payments: SaleRequestPayment[]): Promise<SaleRequestPayload> => {
+    if (!cartItems.length) {
+      throw new Error("ไม่มีสินค้าในตะกร้า");
+    }
+    if (!storeData?.store.id) {
+      throw new Error("ไม่พบข้อมูลร้านค้า");
+    }
+
+    const [storedDevice, storedCustomer] = await Promise.all([
+      window.electronStore.get("pos_device"),
+      window.electronStore.get("pos_selected_customer"),
+    ]);
+    const machineId = getStoredMachineId(storedDevice);
+    const customerId = getStoredCustomerId(storedCustomer);
+    if (!machineId) {
+      throw new Error("ไม่พบ machine_id กรุณาลงทะเบียนเครื่อง POS ก่อน");
+    }
+
+    if (!idempotencyKeyRef.current) {
+      idempotencyKeyRef.current = makeIdempotencyKey(storeData.store.id);
+    }
+
+    const payload: SaleRequestPayload = {
+      idempotency_key: idempotencyKeyRef.current,
+      machine_id: machineId,
+      store_id: storeData.store.id,
+      items: buildSaleItems(),
+      payments,
+      bill_discount_amount: toDecimalString(discount),
+      note: "",
+    };
+
+    if (customerId != null) {
+      payload.customer_id = customerId;
+    }
+
+    return payload;
+  };
+
+  const loadSaleReceipt = async (saleIdOrNo?: number | string | null): Promise<SaleReceipt | undefined> => {
+    if (saleIdOrNo == null || !String(saleIdOrNo).trim()) return undefined;
+
+    const response = await authorizedFetch(`/sales/${encodeURIComponent(String(saleIdOrNo))}/receipt`);
+    if (!response.ok) {
+      throw new Error(await getApiErrorMessage(response, `โหลดใบเสร็จไม่สำเร็จ (${response.status})`));
+    }
+
+    const payload = (await response.json().catch(() => ({}))) as ReceiptApiResponse;
+    return payload.data?.receipt ?? payload.receipt ?? undefined;
+  };
+
+  const withReceiptFallbacks = (
+    receipt: SaleReceipt,
+    saleNo?: string,
+    saleId?: number | string,
+  ): SaleReceipt => ({
+    ...receipt,
+    sale_no: receipt.sale_no || saleNo || String(saleId ?? ""),
+    cashier_name: receipt.cashier_name ?? currentCashierName,
+    machine_id: receipt.machine_id ?? currentMachineId,
+    machine_name: receipt.machine_name ?? currentMachineName ?? currentMachineId,
+  });
+
+  const refreshSaleReceiptForDocument = async (): Promise<void> => {
+    const saleIdOrNo = saleResult?.saleNo ?? saleResult?.id;
+    if (saleIdOrNo == null || !String(saleIdOrNo).trim()) {
+      throw new Error("ไม่พบเลขที่ใบเสร็จสำหรับโหลดข้อมูลล่าสุด");
+    }
+
+    const latestReceipt = await loadSaleReceipt(saleIdOrNo);
+    if (!latestReceipt) {
+      throw new Error("ไม่พบข้อมูลใบเสร็จล่าสุด");
+    }
+
+    const receiptWithFallbacks = withReceiptFallbacks(latestReceipt, saleResult?.saleNo, saleResult?.id);
+    setSaleResult((current) => ({
+      id: current?.id ?? receiptWithFallbacks.id,
+      saleNo: receiptWithFallbacks.sale_no,
+      receipt: receiptWithFallbacks,
+    }));
+    await waitForReceiptRender();
+  };
+
+  const submitSale = async (payments: SaleRequestPayment[], change: number) => {
+    if (isSubmittingSale) return;
+    setIsSubmittingSale(true);
+    setPaymentError(null);
+
+    try {
+      const payload = await buildSalePayload(payments);
+      const response = await authorizedFetch("/sales", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        throw new Error(await getApiErrorMessage(response, `บันทึกการขายไม่สำเร็จ (${response.status})`));
+      }
+
+      const data = (await response.json().catch(() => ({}))) as SaleApiResponse;
+      const receipt = data.receipt ?? data.data?.receipt;
+      const saleNo = data.sale_no ?? data.data?.sale_no ?? receipt?.sale_no;
+      const saleId = data.id ?? data.data?.id ?? receipt?.id;
+      let fullReceipt = receipt;
+      try {
+        fullReceipt = (await loadSaleReceipt(saleNo ?? saleId)) ?? receipt;
+      } catch (receiptError) {
+        console.warn("Load sale receipt after payment failed:", receiptError);
+      }
+      if (fullReceipt) {
+        fullReceipt = withReceiptFallbacks(fullReceipt, saleNo, saleId);
+      }
+      await window.electronStore.set("pos_selected_customer", null);
+      setSaleResult({ id: saleId, saleNo: fullReceipt?.sale_no ?? saleNo, receipt: fullReceipt });
+      showPopup(change);
+    } catch (error) {
+      showPaymentError(error instanceof Error ? error.message : "บันทึกการขายไม่สำเร็จ");
+    } finally {
+      setIsSubmittingSale(false);
+    }
+  };
+
+  const buildCurrentReceipt = (): SaleReceipt => {
+    if (saleResult?.receipt) return saleResult.receipt;
+    const paidTotal = popupChange === null ? total : total + popupChange;
+    const selectedPaymentName =
+      activeTab === "cash"
+        ? cashPaymentType?.paymentName || "เงินสด"
+        : activeTab === "transfer"
+          ? transferPaymentType?.paymentName || "โอนเงิน / พร้อมเพย์"
+          : "โครงการรัฐ";
+
+    return {
+      id: "current-sale",
+      sale_no: saleResult?.saleNo || String(saleResult?.id ?? "กำลังบันทึก"),
+      sale_at: new Date().toISOString(),
+      customer_name: storeData?.store.default_customer_name || "ลูกค้าทั่วไป",
+      cashier_name: currentCashierName,
+      machine_id: currentMachineId,
+      machine_name: currentMachineName ?? currentMachineId,
+      subtotal: subtotal.toFixed(2),
+      item_discount_total: discount.toFixed(2),
+      bill_discount_total: "0.00",
+      promotion_discount_total: "0.00",
+      tax_total: "0.00",
+      total_amount: total.toFixed(2),
+      paid_total: paidTotal.toFixed(2),
+      change_amount: Math.max(popupChange ?? 0, 0).toFixed(2),
+      status: "COMPLETED",
+      items: cartItems.map((item) => {
+        const quantity = Number(item.qty) || 0;
+        const netAmount = getCartItemTotal(item);
+        return {
+          barcode_snapshot: item.barcode_snapshot || item.barcode || null,
+          product_name_snapshot: getCartItemName(item),
+          quantity: quantity.toFixed(2),
+          unit_code_snapshot: item.unit_code || null,
+          unit_name_snapshot: item.unit_name_snapshot || item.unit_name || "ชิ้น",
+          unit_price: (Number(item.price) || 0).toFixed(2),
+          discount_amount: String(item.discount_amount ?? item.discount ?? "0.00"),
+          net_amount: netAmount.toFixed(2),
+        };
+      }),
+      payments: [
+        {
+          payment_type_id: activeTab,
+          payment_name: selectedPaymentName,
+          amount: total.toFixed(2),
+        },
+      ],
+    };
+  };
+
+  const getReceiptHtml = () => {
+    const receiptElement = receiptDocumentRef.current;
+    if (!receiptElement) {
+      throw new Error("Receipt document is not ready");
+    }
+
+    return `<!doctype html>
+<html lang="th">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${saleResult?.saleNo || saleResult?.id || "Receipt"}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Sarabun:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,300;1,400;1,500;1,600;1,700;1,800&display=swap" rel="stylesheet" />
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Sarabun:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,300;1,400;1,500;1,600;1,700;1,800&display=swap");
+      * {
+        font-family: "Sarabun", "TH Sarabun New", "TH SarabunPSK", Tahoma, Arial, sans-serif !important;
+      }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #ffffff;
+        color: #020617;
+        font-family: "Sarabun", "TH Sarabun New", "TH SarabunPSK", Tahoma, Arial, sans-serif;
+      }
+      body {
+        display: flex;
+        justify-content: center;
+        align-items: flex-start;
+      }
+    </style>
+  </head>
+  <body>
+    ${receiptElement.outerHTML}
+  </body>
+</html>`;
+  };
+
+  const getReceiptFilename = (extension: "pdf" | "jpg") => {
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}-${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}`;
+    return `receipt-${stamp}.${extension}`;
+  };
+
+  const waitForReceiptRender = () =>
+    new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 0);
+    });
+
+  const printReceiptAgain = async () => {
+    setIsReceiptActionWorking(true);
+    setReceiptActionMessage(null);
+    try {
+      await refreshSaleReceiptForDocument();
+      await waitForReceiptRender();
+      const html = getReceiptHtml();
+      if (window.electronPrinter?.printHtml) {
+        await window.electronPrinter.printHtml({ html });
+      } else {
+        window.print();
+      }
+      setReceiptActionMessage("ส่งพิมพ์ใบเสร็จแล้ว");
+    } catch (error) {
+      setReceiptActionMessage(error instanceof Error ? error.message : "พิมพ์ใบเสร็จไม่สำเร็จ");
+    } finally {
+      setIsReceiptActionWorking(false);
+    }
+  };
+
+  const exportReceiptPdf = async () => {
+    setIsReceiptActionWorking(true);
+    setReceiptActionMessage(null);
+    try {
+      if (!window.electronPrinter?.exportPdf) {
+        throw new Error("เครื่องนี้ยังไม่รองรับ Export PDF");
+      }
+      await refreshSaleReceiptForDocument();
+      await waitForReceiptRender();
+      const filePath = await window.electronPrinter.exportPdf({
+        html: getReceiptHtml(),
+        defaultPath: getReceiptFilename("pdf"),
+      });
+      setReceiptActionMessage(filePath ? `บันทึก PDF สำเร็จ: ${filePath}` : "ยกเลิกการบันทึก PDF");
+    } catch (error) {
+      setReceiptActionMessage(error instanceof Error ? error.message : "Export PDF ไม่สำเร็จ");
+    } finally {
+      setIsReceiptActionWorking(false);
+    }
+  };
+
+  const exportReceiptJpeg = async () => {
+    setIsReceiptActionWorking(true);
+    setReceiptActionMessage(null);
+    try {
+      await refreshSaleReceiptForDocument();
+      await waitForReceiptRender();
+      if (!receiptDocumentRef.current) {
+        throw new Error("Receipt document is not ready");
+      }
+      const dataUrl = await toJpeg(receiptDocumentRef.current, {
+        quality: 0.95,
+        backgroundColor: "#ffffff",
+        pixelRatio: 2,
+      });
+      const link = document.createElement("a");
+      link.href = dataUrl;
+      link.download = getReceiptFilename("jpg");
+      link.click();
+      setReceiptActionMessage("Export JPEG สำเร็จ");
+    } catch (error) {
+      setReceiptActionMessage(error instanceof Error ? error.message : "Export JPEG ไม่สำเร็จ");
+    } finally {
+      setIsReceiptActionWorking(false);
+    }
+  };
+
   // ---------- cash payment ----------
   const processCashPayment = () => {
+    if (isSubmittingSale) return;
     const received = parseFloat(cashInput);
     if (isNaN(received) || received < 0) {
       showPaymentError("กรุณากรอกจำนวนเงินที่ถูกต้อง");
@@ -367,16 +867,29 @@ const POSPayment: React.FC<POSPaymentProps> = ({
       return;
     }
     const change = received - total;
-    showPopup(change);
+    try {
+      void submitSale([buildSinglePayment(cashPaymentType, received, "CASH")], change);
+    } catch (error) {
+      showPaymentError(error instanceof Error ? error.message : "บันทึกการขายไม่สำเร็จ");
+    }
   };
 
   // ---------- transfer / gov payment ----------
   const processExactPayment = () => {
-    showPopup(0);
+    if (isSubmittingSale) return;
+    const paymentType =
+      activeTab === "transfer" ? transferPaymentType : governmentPaymentTypes[0];
+    const reference = paymentType?.paymentCode ?? activeTab.toUpperCase();
+    try {
+      void submitSale([buildSinglePayment(paymentType, total, reference)], 0);
+    } catch (error) {
+      showPaymentError(error instanceof Error ? error.message : "บันทึกการขายไม่สำเร็จ");
+    }
   };
 
   // ---------- quick amount buttons ----------
   const handleQuickAmount = (amount: string) => {
+    if (isSubmittingSale) return;
     setCashInput(amount);
     focusCashInput();
     
@@ -384,7 +897,11 @@ const POSPayment: React.FC<POSPaymentProps> = ({
     const received = parseFloat(amount);
     if (!isNaN(received) && received >= total) {
       const change = received - total;
-      showPopup(change);
+      try {
+        void submitSale([buildSinglePayment(cashPaymentType, received, "CASH")], change);
+      } catch (error) {
+        showPaymentError(error instanceof Error ? error.message : "บันทึกการขายไม่สำเร็จ");
+      }
     } else if (!isNaN(received) && received < total) {
       showPaymentError("จำนวนเงินไม่พอชำระ (ยอดรวม " + total.toFixed(2) + " บาท)");
     }
@@ -415,7 +932,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   };
 
   // ✅ Update payment line
-  const updatePaymentLine = (id: string, field: keyof MixedPaymentLine, value: any) => {
+  const updatePaymentLine = (id: string, field: keyof MixedPaymentLine, value: string) => {
     setMixedPayments(mixedPayments.map(p => 
       p.id === id ? { ...p, [field]: value } : p
     ));
@@ -437,6 +954,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
 
   // ✅ Confirm mixed payment
   const confirmMixedPayment = () => {
+    if (isSubmittingSale) return;
     if (!isMixedPaymentValid()) {
       alert("กรุณากรอกจำนวนเงินให้ครบถ้วน");
       return;
@@ -449,11 +967,23 @@ const POSPayment: React.FC<POSPaymentProps> = ({
       change
     });
     
-    closeSplitPopup();
-    if (Math.abs(change) < 0.01) {
-      showPopup(0);
-    } else {
-      showPopup(change);
+    try {
+      const payments = mixedPayments.map((payment) => {
+        const paymentTypeId = getPaymentTypeId(payment.type);
+        if (!paymentTypeId) {
+          throw new Error("ไม่พบประเภทการชำระเงิน กรุณาตรวจสอบการตั้งค่าวิธีชำระเงิน");
+        }
+        return {
+          payment_type_id: paymentTypeId,
+          amount: toDecimalString(payment.amount),
+          reference_no: payment.reference?.trim() || payment.type,
+        };
+      });
+
+      closeSplitPopup();
+      void submitSale(payments, Math.abs(change) < 0.01 ? 0 : change);
+    } catch (error) {
+      showPaymentError(error instanceof Error ? error.message : "บันทึกการขายไม่สำเร็จ");
     }
   };
 
@@ -519,6 +1049,20 @@ const POSPayment: React.FC<POSPaymentProps> = ({
 
     const loadStoreSettings = async () => {
       try {
+        const [savedApiPath, storedDevice, storedUser] = await Promise.all([
+          window.electronStore?.get?.("apiPath"),
+          window.electronStore?.get?.("pos_device"),
+          window.electronStore?.get?.("user"),
+        ]);
+        if (isMounted && typeof savedApiPath === "string") {
+          setApiBaseUrl(savedApiPath.trim().replace(/\/+$/, ""));
+        }
+        if (isMounted) {
+          setCurrentMachineId(getStoredMachineId(storedDevice));
+          setCurrentMachineName(getStoredDeviceName(storedDevice));
+          setCurrentCashierName(getStoredCashierName(storedUser));
+        }
+
         const response = await authorizedFetch("/store/settings");
         const payload = (await response.json().catch(() => ({}))) as {
           data?: StoreData;
@@ -658,6 +1202,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   const mixedCombined = calculateMixedTotal();
   const mixedRemaining = total - mixedCombined;
   const quickCashAmounts = getQuickCashAmounts(total);
+  const currentReceipt = buildCurrentReceipt();
 
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden", fontFamily: "'Sarabun', sans-serif" }}>
@@ -940,6 +1485,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         e.preventDefault();
+                        if (isSubmittingSale) return;
                         processCashPayment();
                       }
                     }}
@@ -962,6 +1508,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
                 {quickCashAmounts.map((amount) => (
                   <button
                     key={amount}
+                    disabled={isSubmittingSale}
                     onClick={() => handleQuickAmount(amount.toFixed(2))}
                     style={{
                       background: "var(--blue-100, #e8f0fe)",
@@ -971,7 +1518,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
                       padding: "12px 8px",
                       fontSize: 13,
                       fontWeight: 600,
-                      cursor: "pointer",
+                      cursor: isSubmittingSale ? "not-allowed" : "pointer",
                       transition: "all 0.15s ease",
                     }}
                   >
@@ -982,6 +1529,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
 
               <button
                 onClick={processCashPayment}
+                disabled={isSubmittingSale}
                 style={{
                   width: "100%",
                   background: "var(--blue-600, #1b4b8f)",
@@ -1089,6 +1637,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
 
               <button
                 onClick={processExactPayment}
+                disabled={isSubmittingSale}
                 style={{
                   width: "100%",
                   background: "var(--blue-600, #1b4b8f)",
@@ -1098,7 +1647,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
                   padding: 18,
                   fontSize: 16,
                   fontWeight: 700,
-                  cursor: "pointer",
+                  cursor: isSubmittingSale ? "not-allowed" : "pointer",
                   transition: "background 0.15s ease",
                 }}
               >
@@ -1158,6 +1707,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
               <div style={{ marginTop: 24 }}>
                 <button
                   onClick={processExactPayment}
+                  disabled={isSubmittingSale}
                   style={{
                     width: "100%",
                     background: "var(--blue-600, #1b4b8f)",
@@ -1167,7 +1717,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
                     padding: 18,
                     fontSize: 16,
                     fontWeight: 700,
-                    cursor: "pointer",
+                    cursor: isSubmittingSale ? "not-allowed" : "pointer",
                     transition: "background 0.15s ease",
                   }}
                 >
@@ -1441,7 +1991,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
             {/* Confirm Button */}
             <button
               onClick={confirmMixedPayment}
-              disabled={!isMixedPaymentValid()}
+              disabled={!isMixedPaymentValid() || isSubmittingSale}
               style={{
                 width: "100%",
                 background: isMixedPaymentValid() ? "var(--blue-600, #1b4b8f)" : "var(--gray-300, #d7dee8)",
@@ -1451,7 +2001,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
                 padding: 16,
                 fontSize: 15,
                 fontWeight: 700,
-                cursor: isMixedPaymentValid() ? "pointer" : "not-allowed",
+                cursor: isMixedPaymentValid() && !isSubmittingSale ? "pointer" : "not-allowed",
                 transition: "background 0.15s ease",
               }}
             >
@@ -1565,6 +2115,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
+              if (isSubmittingSale) return;
               confirmSuccessfulPayment();
             }
           }}
@@ -1574,7 +2125,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
               background: "var(--white, #fff)",
               padding: "40px 48px 36px",
               borderRadius: 28,
-              maxWidth: 400,
+              maxWidth: 460,
               width: "90%",
               textAlign: "center",
               boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
@@ -1612,6 +2163,124 @@ const POSPayment: React.FC<POSPaymentProps> = ({
               </div>
             )}
             <div style={{ marginTop: 6, fontSize: 13, color: "var(--gray-500, #6b7785)" }}>ยอดรวม {formatBaht(total)}</div>
+            {saleResult?.saleNo || saleResult?.id ? (
+              <div
+                style={{
+                  marginTop: 8,
+                  fontSize: 13,
+                  color: "var(--gray-500, #6b7785)",
+                  fontFamily: "'Sarabun', sans-serif",
+                }}
+              >
+                เลขที่บิล:{" "}
+                <span style={{ color: "var(--blue-700, #174ea6)", fontWeight: 700 }}>
+                  {saleResult.saleNo || saleResult.id}
+                </span>
+              </div>
+            ) : null}
+
+            {receiptActionMessage ? (
+              <div
+                style={{
+                  marginTop: 14,
+                  padding: "10px 12px",
+                  borderRadius: 12,
+                  background: "#eff6ff",
+                  border: "1px solid #bfdbfe",
+                  color: "#1d4ed8",
+                  fontSize: 12,
+                  lineHeight: 1.45,
+                  wordBreak: "break-word",
+                }}
+              >
+                {receiptActionMessage}
+              </div>
+            ) : null}
+
+            {showReceiptExportOptions ? (
+              <div
+                style={{
+                  marginTop: 16,
+                  padding: 12,
+                  border: "1px solid var(--gray-300, #d7dee8)",
+                  borderRadius: 14,
+                  background: "var(--gray-50, #f8fafc)",
+                  textAlign: "left",
+                }}
+              >
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <button
+                    type="button"
+                    disabled={isReceiptActionWorking}
+                    onClick={() => void exportReceiptPdf()}
+                    style={{
+                      border: "1px solid #cfe0f7",
+                      borderRadius: 10,
+                      padding: "10px 12px",
+                      background: "#fff",
+                      color: "var(--blue-700, #174ea6)",
+                      fontWeight: 700,
+                      cursor: isReceiptActionWorking ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    PDF
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isReceiptActionWorking}
+                    onClick={() => void exportReceiptJpeg()}
+                    style={{
+                      border: "1px solid #cfe0f7",
+                      borderRadius: 10,
+                      padding: "10px 12px",
+                      background: "#fff",
+                      color: "var(--blue-700, #174ea6)",
+                      fontWeight: 700,
+                      cursor: isReceiptActionWorking ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    JPEG
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 18 }}>
+              <button
+                type="button"
+                disabled={isReceiptActionWorking}
+                onClick={() => void printReceiptAgain()}
+                style={{
+                  background: "#fff",
+                  color: "var(--blue-700, #174ea6)",
+                  border: "1px solid #cfe0f7",
+                  borderRadius: 14,
+                  padding: "12px 14px",
+                  fontSize: 14,
+                  fontWeight: 700,
+                  cursor: isReceiptActionWorking ? "not-allowed" : "pointer",
+                }}
+              >
+                พิมพ์ใบเสร็จอีกครั้ง
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowReceiptExportOptions((visible) => !visible)}
+                style={{
+                  background: "#fff",
+                  color: "var(--blue-700, #174ea6)",
+                  border: "1px solid #cfe0f7",
+                  borderRadius: 14,
+                  padding: "12px 14px",
+                  fontSize: 14,
+                  fontWeight: 700,
+                  cursor: isSubmittingSale ? "not-allowed" : "pointer",
+                }}
+              >
+                Export
+              </button>
+            </div>
+
             <br />
             <button
               type="button"
@@ -1628,11 +2297,36 @@ const POSPayment: React.FC<POSPaymentProps> = ({
                 transition: "background 0.15s ease",
               }}
             >
-              ตกลง
+              บันทึก
             </button>
           </div>
         </div>
       )}
+
+      {popupChange !== null ? (
+        <div
+          aria-hidden="true"
+          style={{
+            position: "fixed",
+            left: -10000,
+            top: 0,
+            width: 1,
+            height: 1,
+            overflow: "hidden",
+            pointerEvents: "none",
+          }}
+        >
+          <ReceiptDocument
+            ref={receiptDocumentRef}
+            receipt={currentReceipt}
+            storeSettings={storeData?.store ?? null}
+            paymentAccount={storeData?.payment_account ?? null}
+            paperSize={receiptPaperSize}
+            mode="export"
+            apiBaseUrl={apiBaseUrl}
+          />
+        </div>
+      ) : null}
 
       {/* ✅ Hidden Canvas Elements for QR Generation */}
       <canvas ref={splitQrCanvasRef} style={{ display: "none" }} />

@@ -6,7 +6,8 @@ import {
   IconUserPlus,
   IconX,
 } from "@tabler/icons-react";
-import type { RefObject } from "react";
+import { useCallback, useEffect, useState, type RefObject } from "react";
+import { authorizedFetch, getApiErrorMessage } from "./StoreSetting";
 
 export interface PosCustomer {
   id: number | string;
@@ -19,8 +20,17 @@ export interface PosCustomer {
   mobile?: string | null;
   email?: string | null;
   address?: string | null;
+  tax_id?: string | null;
   points_balance?: number;
   total_purchase_amount?: number;
+}
+
+interface CustomersPaginationResponse {
+  items: PosCustomer[];
+  total: number;
+  page: number;
+  limit: number;
+  total_pages: number;
 }
 
 interface CustomerPickerPopupProps {
@@ -46,14 +56,92 @@ export default function CustomerPickerPopup({
   searchInputRef,
   searchQuery,
   onSearchQueryChange,
-  customers,
+  customers: _customers,
   selectedCustomer,
-  isLoading,
-  error,
+  isLoading: _isLoading,
+  error: _error,
   onClose,
-  onRefresh,
+  onRefresh: _onRefresh,
   onSelectCustomer,
 }: CustomerPickerPopupProps) {
+  const [customers, setCustomers] = useState<PosCustomer[]>([]);
+  const [page, setPage] = useState(1);
+  const [limit] = useState(20);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+  const [search, setSearch] = useState(searchQuery);
+  const [debouncedSearch, setDebouncedSearch] = useState(searchQuery.trim());
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const fetchCustomers = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: String(limit),
+      });
+      const keyword = debouncedSearch.trim();
+
+      if (keyword) {
+        params.set("search", keyword);
+      }
+
+      const response = await authorizedFetch(`/customers?${params.toString()}`);
+
+      if (!response.ok) {
+        throw new Error(
+          await getApiErrorMessage(
+            response,
+            `โหลดข้อมูลลูกค้าไม่สำเร็จ (${response.status})`,
+          ),
+        );
+      }
+
+      const data: CustomersPaginationResponse = await response.json();
+      setCustomers(Array.isArray(data.items) ? data.items : []);
+      setTotal(typeof data.total === "number" ? data.total : 0);
+      setTotalPages(
+        typeof data.total_pages === "number" ? data.total_pages : 0,
+      );
+    } catch (err) {
+      console.error("Error loading customers:", err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "ไม่สามารถโหลดข้อมูลลูกค้าได้ กรุณาลองใหม่อีกครั้ง",
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  }, [debouncedSearch, limit, page, refreshKey]);
+
+  useEffect(() => {
+    void fetchCustomers();
+  }, [fetchCustomers]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(search.trim());
+      setPage(1);
+    }, 400);
+
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  const handleSearchChange = (value: string) => {
+    setSearch(value);
+    onSearchQueryChange(value);
+  };
+
+  const refreshCustomers = () => {
+    setPage(1);
+    setRefreshKey((current) => current + 1);
+  };
+
   return (
     <div
       className="fixed inset-0 z-[100] grid place-items-center bg-black/50 p-4"
@@ -103,15 +191,15 @@ export default function CustomerPickerPopup({
               <input
                 ref={searchInputRef}
                 type="text"
-                value={searchQuery}
-                onChange={(event) => onSearchQueryChange(event.target.value)}
+                value={search}
+                onChange={(event) => handleSearchChange(event.target.value)}
                 placeholder="ค้นหาชื่อ / รหัส / เบอร์โทร"
                 className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm text-slate-800 outline-none transition focus:border-[#1d6fd8] focus:ring-2 focus:ring-[#1d6fd8]/20"
               />
             </div>
             <button
               type="button"
-              onClick={() => void onRefresh()}
+              onClick={refreshCustomers}
               disabled={isLoading}
               title="โหลดข้อมูลใหม่"
               aria-label="โหลดข้อมูลลูกค้าใหม่"
@@ -132,7 +220,7 @@ export default function CustomerPickerPopup({
               <p className="text-sm text-red-500">{error}</p>
               <button
                 type="button"
-                onClick={() => void onRefresh()}
+                onClick={refreshCustomers}
                 className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
               >
                 <IconRefresh size={16} />
@@ -178,11 +266,50 @@ export default function CustomerPickerPopup({
                         <span className="truncate">
                           {getCustomerPhone(customer)}
                         </span>
+                        {customer.tax_id ? (
+                          <span className="truncate">
+                            Tax: {customer.tax_id}
+                          </span>
+                        ) : null}
                       </div>
                     </div>
                   </button>
                 );
               })}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 text-xs text-slate-500">
+                <span>
+                  แสดง {customers.length} จาก {total} รายการ
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPage((current) => Math.max(1, current - 1))
+                    }
+                    disabled={page <= 1 || isLoading}
+                    className="rounded-lg border border-slate-200 px-3 py-1.5 text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    ก่อนหน้า
+                  </button>
+                  <span>
+                    หน้า {page} / {Math.max(totalPages, 1)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPage((current) =>
+                        totalPages > 0
+                          ? Math.min(totalPages, current + 1)
+                          : current,
+                      )
+                    }
+                    disabled={page >= totalPages || isLoading}
+                    className="rounded-lg border border-slate-200 px-3 py-1.5 text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    ถัดไป
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>

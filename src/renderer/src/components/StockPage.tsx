@@ -118,6 +118,7 @@ interface StockMovement {
   createdAt?: string;
   createdByName?: string | null;
   createdById?: string | null;
+  deviceId?: string | null;
   isReversed: boolean;
   canReverse: boolean;
 }
@@ -142,6 +143,17 @@ interface PaginatedResponse<T> {
 interface StoreOption {
   id: number;
   name: string;
+}
+
+interface UserSummary {
+  userId: string;
+  fullName: string;
+}
+
+interface PosDeviceSummary {
+  id: string;
+  machineId: string | null;
+  deviceName: string;
 }
 
 type CountedUnitQuantity = Record<number, number>;
@@ -198,6 +210,18 @@ const movementTypeLabels: Record<string, string> = {
   TRANSFER_IN: "รับโอนสินค้า",
   TRANSFER_OUT: "โอนสินค้าออก",
   REVERSAL: "กลับรายการ",
+};
+
+const stockReasonCodeLabels: Record<string, string> = {
+  OPENING: "\u0e15\u0e31\u0e49\u0e07\u0e22\u0e2d\u0e14\u0e40\u0e23\u0e34\u0e48\u0e21\u0e15\u0e49\u0e19",
+  PHYSICAL_COUNT: "\u0e15\u0e23\u0e27\u0e08\u0e19\u0e31\u0e1a\u0e2a\u0e15\u0e4a\u0e2d\u0e01",
+  STOCK_COUNT: "\u0e15\u0e23\u0e27\u0e08\u0e19\u0e31\u0e1a\u0e2a\u0e15\u0e4a\u0e2d\u0e01",
+  MANUAL_ADJUSTMENT: "\u0e1b\u0e23\u0e31\u0e1a\u0e22\u0e2d\u0e14\u0e14\u0e49\u0e27\u0e22\u0e15\u0e19\u0e40\u0e2d\u0e07",
+  DAMAGED: "\u0e2a\u0e34\u0e19\u0e04\u0e49\u0e32\u0e0a\u0e33\u0e23\u0e38\u0e14",
+  CORRECTION: "\u0e41\u0e01\u0e49\u0e44\u0e02\u0e22\u0e2d\u0e14\u0e1c\u0e34\u0e14\u0e1e\u0e25\u0e32\u0e14",
+  MISSING: "\u0e1e\u0e1a\u0e2a\u0e34\u0e19\u0e04\u0e49\u0e32\u0e2a\u0e39\u0e0d\u0e2b\u0e32\u0e22",
+  OVERAGE: "\u0e1e\u0e1a\u0e2a\u0e34\u0e19\u0e04\u0e49\u0e32\u0e40\u0e01\u0e34\u0e19\u0e08\u0e32\u0e01\u0e23\u0e30\u0e1a\u0e1a",
+  OTHER: "\u0e2d\u0e37\u0e48\u0e19 \u0e46",
 };
 
 const getApiBaseUrl = async (): Promise<string> => {
@@ -305,7 +329,6 @@ const getMovementActor = (item: Record<string, unknown>): { name: string | null;
   const employee = objectValue(item.employee);
   const actorName =
     stringValue(item.createdByName ?? item.created_by_name ?? item.userName ?? item.user_name) ??
-    stringOrNumberValue(item.created_by ?? item.createdBy) ??
     getActorLabel(item.createdBy ?? item.created_by) ??
     getActorLabel(item.user) ??
     getActorLabel(item.employee);
@@ -674,6 +697,15 @@ const fetchMovements = async (
         createdAt: stringValue(item.createdAt ?? item.created_at),
         createdByName: actor.name,
         createdById: actor.id,
+        deviceId:
+          stringOrNumberValue(
+            item.deviceId ??
+              item.device_id ??
+              item.posDeviceId ??
+              item.pos_device_id ??
+              item.machineId ??
+              item.machine_id,
+          ) ?? null,
         isReversed: Boolean(item.isReversed ?? item.is_reversed),
         canReverse:
           item.canReverse === undefined && item.can_reverse === undefined
@@ -683,6 +715,43 @@ const fetchMovements = async (
     }),
     pagination: normalizePagination(payload, params.page, params.limit),
   };
+};
+
+const fetchUsers = async (): Promise<UserSummary[]> => {
+  const response = await authorizedFetch("/users");
+  if (!response.ok) throw new Error(await readErrorMessage(response));
+
+  return unwrapArray<Record<string, unknown>>(await response.json())
+    .map((user) => {
+      const userId = stringValue(user.user_id ?? user.userId ?? user.id);
+      const fullName =
+        stringValue(user.full_name ?? user.fullName ?? user.name) ??
+        stringValue(user.username);
+
+      if (!userId || !fullName) return null;
+      return { userId, fullName };
+    })
+    .filter((user): user is UserSummary => Boolean(user));
+};
+
+const fetchPosDevices = async (): Promise<PosDeviceSummary[]> => {
+  const response = await authorizedFetch("/pos-devices");
+  if (!response.ok) throw new Error(await readErrorMessage(response));
+
+  return unwrapArray<Record<string, unknown>>(await response.json())
+    .map((device) => {
+      const id = stringOrNumberValue(device.id);
+      const machineId = stringValue(device.machine_id ?? device.machineId) ?? null;
+      const deviceName =
+        stringValue(device.device_name ?? device.deviceName) ??
+        stringValue(device.hostname) ??
+        machineId ??
+        id;
+
+      if (!id || !deviceName) return null;
+      return { id, machineId, deviceName };
+    })
+    .filter((device): device is PosDeviceSummary => Boolean(device));
 };
 
 const formatQty = (value: number): string =>
@@ -784,6 +853,8 @@ export default function StockPage() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [storeId, setStoreId] = useState("");
   const [stores, setStores] = useState<StoreOption[]>([]);
+  const [userNameById, setUserNameById] = useState<Record<string, string>>({});
+  const [deviceNameById, setDeviceNameById] = useState<Record<string, string>>({});
   const [lowStock, setLowStock] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -866,6 +937,47 @@ export default function StockPage() {
       }
     };
     void loadStores();
+  }, []);
+
+  useEffect(() => {
+    const loadUsers = async () => {
+      try {
+        const users = await fetchUsers();
+        setUserNameById(
+          users.reduce<Record<string, string>>((current, user) => {
+            current[user.userId] = user.fullName;
+            return current;
+          }, {}),
+        );
+      } catch (err) {
+        console.error("Error fetching users:", err);
+        setUserNameById({});
+      }
+    };
+
+    void loadUsers();
+  }, []);
+
+  useEffect(() => {
+    const loadDevices = async () => {
+      try {
+        const devices = await fetchPosDevices();
+        setDeviceNameById(
+          devices.reduce<Record<string, string>>((current, device) => {
+            current[device.id] = device.deviceName;
+            if (device.machineId) {
+              current[device.machineId] = device.deviceName;
+            }
+            return current;
+          }, {}),
+        );
+      } catch (err) {
+        console.error("Error fetching POS devices:", err);
+        setDeviceNameById({});
+      }
+    };
+
+    void loadDevices();
   }, []);
 
   const openDialog = async (mode: Exclude<DialogMode, null>, stock: StockItem) => {
@@ -1221,7 +1333,7 @@ export default function StockPage() {
 
       {dialogMode && selectedStock ? (
         <div className="fixed inset-0 z-[80] grid place-items-center bg-black/40 p-4">
-          <div className="max-h-[90dvh] w-full max-w-5xl overflow-auto rounded-xl bg-white shadow-xl">
+          <div className="max-h-[90dvh] w-full max-w-[min(96vw,1280px)] overflow-auto rounded-xl bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
               <h2 className="text-xl font-bold text-slate-900">
                 {dialogMode === "count"
@@ -1336,6 +1448,8 @@ export default function StockPage() {
                   movementTotalPages={movementTotalPages}
                   movementType={movementType}
                   setMovementType={setMovementType}
+                  userNameById={userNameById}
+                  deviceNameById={deviceNameById}
                   dateFrom={dateFrom}
                   setDateFrom={setDateFrom}
                   dateTo={dateTo}
@@ -1629,6 +1743,8 @@ function StockHistory({
   movementTotalPages,
   movementType,
   setMovementType,
+  userNameById,
+  deviceNameById,
   dateFrom,
   setDateFrom,
   dateTo,
@@ -1642,6 +1758,8 @@ function StockHistory({
   movementTotalPages: number;
   movementType: string;
   setMovementType: (value: string) => void;
+  userNameById: Record<string, string>;
+  deviceNameById: Record<string, string>;
   dateFrom: string;
   setDateFrom: (value: string) => void;
   dateTo: string;
@@ -1685,7 +1803,7 @@ function StockHistory({
         </button>
       </div>
       <div className="overflow-x-auto rounded-lg border border-slate-200">
-        <table className="min-w-[1100px] w-full text-left text-sm">
+        <table className="w-full table-fixed text-left text-sm">
           <thead className="bg-slate-100 text-xs text-slate-600">
             <tr>
               {[
@@ -1697,10 +1815,11 @@ function StockHistory({
                 "เลขอ้างอิง",
                 "เหตุผล",
                 "หมายเหตุ",
+                "\u0e40\u0e04\u0e23\u0e37\u0e48\u0e2d\u0e07",
                 "ผู้ทำรายการ",
                 "จัดการ",
               ].map((header) => (
-                <th key={header} className="px-3 py-2">
+                <th key={header} className="px-2 py-2">
                   {header}
                 </th>
               ))}
@@ -1709,37 +1828,54 @@ function StockHistory({
           <tbody className="divide-y divide-slate-100">
             {movementLoading ? (
               <tr>
-                <td colSpan={10} className="px-3 py-8 text-center text-slate-500">
+                <td colSpan={11} className="px-3 py-8 text-center text-slate-500">
                   กำลังโหลดข้อมูล...
                 </td>
               </tr>
             ) : movements.length === 0 ? (
               <tr>
-                <td colSpan={10} className="px-3 py-8 text-center text-slate-500">
+                <td colSpan={11} className="px-3 py-8 text-center text-slate-500">
                   ยังไม่มีประวัติการเคลื่อนไหวของสต๊อก
                 </td>
               </tr>
             ) : (
-              movements.map((movement) => (
+              movements.map((movement) => {
+                const actorName =
+                  (movement.createdById ? userNameById[movement.createdById] : undefined) ??
+                  movement.createdByName ??
+                  (movement.createdById ? `ID: ${movement.createdById}` : "-");
+                const deviceName =
+                  (movement.deviceId ? deviceNameById[movement.deviceId] : undefined) ??
+                  movement.deviceId ??
+                  "-";
+
+                return (
                 <tr key={movement.id}>
-                  <td className="px-3 py-2">{formatDate(movement.createdAt)}</td>
-                  <td className="px-3 py-2">
+                  <td className="px-2 py-2 align-top">{formatDate(movement.createdAt)}</td>
+                  <td className="px-2 py-2 align-top">
                     {movementTypeLabels[movement.movementType] ?? movement.movementType}
                   </td>
-                  <td className="px-3 py-2 font-semibold">
+                  <td className="px-2 py-2 align-top font-semibold">
                     {movement.qtyChangeBase > 0
                       ? `+${formatQty(movement.qtyChangeBase)}`
                       : formatQty(movement.qtyChangeBase)}
                   </td>
-                  <td className="px-3 py-2">{formatQty(movement.beforeQtyBase)}</td>
-                  <td className="px-3 py-2">{formatQty(movement.afterQtyBase)}</td>
-                  <td className="px-3 py-2">{movement.referenceId || "-"}</td>
-                  <td className="px-3 py-2">{movement.reasonCode || "-"}</td>
-                  <td className="px-3 py-2">{movement.note || "-"}</td>
-                  <td className="px-3 py-2">
-                    {movement.createdByName || (movement.createdById ? `ID: ${movement.createdById}` : "-")}
+                  <td className="px-2 py-2 align-top">{formatQty(movement.beforeQtyBase)}</td>
+                  <td className="px-2 py-2 align-top">{formatQty(movement.afterQtyBase)}</td>
+                  <td className="break-words px-2 py-2 align-top">{movement.referenceId || "-"}</td>
+                  <td className="px-2 py-2 align-top">
+                    {movement.reasonCode
+                      ? stockReasonCodeLabels[movement.reasonCode] ?? movement.reasonCode
+                      : "-"}
                   </td>
-                  <td className="px-3 py-2">
+                  <td className="break-words px-2 py-2 align-top">{movement.note || "-"}</td>
+                  <td className="break-words px-2 py-2 align-top">
+                    {deviceName}
+                  </td>
+                  <td className="break-words px-2 py-2 align-top">
+                    {actorName}
+                  </td>
+                  <td className="px-2 py-2 align-top">
                     {movement.canReverse &&
                     !movement.isReversed &&
                     movement.movementType !== "REVERSAL" ? (
@@ -1755,7 +1891,8 @@ function StockHistory({
                     )}
                   </td>
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>

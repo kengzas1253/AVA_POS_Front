@@ -4066,6 +4066,7 @@ export default function PosLandingPages() {
         total={total}
         onBack={() => setCurrentPage("pos")}
         onPaymentComplete={() => {
+          clearSelectedCustomer();
           clearCart();
           setCurrentPage("pos");
         }}
