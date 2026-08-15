@@ -4,6 +4,11 @@ import QRCode from "qrcode";
 import generatePayload from "promptpay-qr";
 import { toJpeg } from "html-to-image";
 import ReceiptDocument, { type ReceiptPaperSize, type SaleReceipt } from "./ReceiptDocument";
+import CustomerPickerPopup, {
+  getCustomerName,
+  type PosCustomer,
+} from "./CustomerPickerPopup";
+import { SELECTED_POS_CUSTOMER_KEY } from "./autoPackPricingService";
 
 interface POSPaymentCartItem {
   id?: number | string;
@@ -34,6 +39,7 @@ interface POSPaymentProps {
   subtotal?: number;
   discount?: number;
   total?: number;
+  heldBillId?: number | string | null;
 }
 
 // ✅ Mixed Payment Method Types
@@ -386,6 +392,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   subtotal = 0,
   discount = 0,
   total = 0,
+  heldBillId = null,
 }) => {
   // ---------- state ----------
   const [activeTab, setActiveTab] = useState<PaymentTabId>("cash");
@@ -407,6 +414,9 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   const [currentMachineId, setCurrentMachineId] = useState<string | null>(null);
   const [currentMachineName, setCurrentMachineName] = useState<string | null>(null);
   const [currentCashierName, setCurrentCashierName] = useState<string | null>(null);
+  const [selectedCustomer, setSelectedCustomer] = useState<PosCustomer | null>(null);
+  const [showCustomerPopup, setShowCustomerPopup] = useState(false);
+  const [customerSearchQuery, setCustomerSearchQuery] = useState("");
   
   // ✅ Mixed payment state
   const [mixedPayments, setMixedPayments] = useState<MixedPaymentLine[]>([
@@ -421,6 +431,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
   const paymentErrorButtonRef = useRef<HTMLButtonElement>(null);
   const receiptDocumentRef = useRef<HTMLDivElement | null>(null);
   const idempotencyKeyRef = useRef<string | null>(null);
+  const customerSearchRef = useRef<HTMLInputElement | null>(null);
 
   // ✅ QR code state
   const [splitQrDataUrl, setSplitQrDataUrl] = useState<string | null>(null);
@@ -507,6 +518,39 @@ const POSPayment: React.FC<POSPaymentProps> = ({
     setPaymentError(null);
     focusCashInput(100);
   }, [focusCashInput]);
+
+  const openCustomerPopup = () => {
+    setCustomerSearchQuery("");
+    setShowCustomerPopup(true);
+  };
+
+  const closeCustomerPopup = () => {
+    setShowCustomerPopup(false);
+    setCustomerSearchQuery("");
+    focusCashInput(100);
+  };
+
+  const selectCustomer = (customer: PosCustomer) => {
+    setSelectedCustomer(customer);
+    void window.electronStore
+      .set(SELECTED_POS_CUSTOMER_KEY, customer)
+      .catch((error) => {
+        console.error("Select payment customer error:", error);
+        showPaymentError("ไม่สามารถบันทึกลูกค้าที่เลือกได้");
+      });
+    closeCustomerPopup();
+  };
+
+  const clearSelectedCustomer = () => {
+    setSelectedCustomer(null);
+    void window.electronStore
+      .set(SELECTED_POS_CUSTOMER_KEY, null)
+      .catch((error) => {
+        console.error("Clear payment customer error:", error);
+        showPaymentError("ไม่สามารถล้างลูกค้าที่เลือกได้");
+      });
+    focusCashInput(100);
+  };
 
   const confirmSuccessfulPayment = () => {
     idempotencyKeyRef.current = null;
@@ -611,6 +655,18 @@ const POSPayment: React.FC<POSPaymentProps> = ({
     return payload.data?.receipt ?? payload.receipt ?? undefined;
   };
 
+  const deleteHeldBillAfterSale = async (): Promise<void> => {
+    if (heldBillId == null || !String(heldBillId).trim()) return;
+
+    const response = await authorizedFetch(`/held-bills/${encodeURIComponent(String(heldBillId))}`, {
+      method: "DELETE",
+    });
+
+    if (!response.ok) {
+      throw new Error(await getApiErrorMessage(response, `ลบบิลที่พักหลังขายสำเร็จไม่สำเร็จ (${response.status})`));
+    }
+  };
+
   const withReceiptFallbacks = (
     receipt: SaleReceipt,
     saleNo?: string,
@@ -675,7 +731,9 @@ const POSPayment: React.FC<POSPaymentProps> = ({
       if (fullReceipt) {
         fullReceipt = withReceiptFallbacks(fullReceipt, saleNo, saleId);
       }
+      await deleteHeldBillAfterSale();
       await window.electronStore.set("pos_selected_customer", null);
+      setSelectedCustomer(null);
       setSaleResult({ id: saleId, saleNo: fullReceipt?.sale_no ?? saleNo, receipt: fullReceipt });
       showPopup(change);
     } catch (error) {
@@ -1160,6 +1218,41 @@ const POSPayment: React.FC<POSPaymentProps> = ({
     focusCashInput(150);
   }, [focusCashInput]);
 
+  useEffect(() => {
+    let isCancelled = false;
+
+    const restoreSelectedCustomer = async () => {
+      const storedCustomer = await window.electronStore.get(SELECTED_POS_CUSTOMER_KEY);
+      if (
+        !isCancelled &&
+        storedCustomer &&
+        typeof storedCustomer === "object" &&
+        "id" in storedCustomer
+      ) {
+        setSelectedCustomer(storedCustomer as PosCustomer);
+      }
+    };
+
+    void restoreSelectedCustomer();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!showCustomerPopup) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      customerSearchRef.current?.focus();
+      customerSearchRef.current?.select();
+    }, 50);
+
+    return () => window.clearTimeout(timer);
+  }, [showCustomerPopup]);
+
   // ✅ เมื่อ popup à¹€à¸›ิด à¹ƒà¸«à¹‰à¹‚à¸Ÿà¸à¸±à¸ªà¸—ี่ container เพื่อรับ event keyboard
   useEffect(() => {
     if (popupChange !== null) {
@@ -1189,6 +1282,10 @@ const POSPayment: React.FC<POSPaymentProps> = ({
         closePaymentError();
         return;
       }
+      if (showCustomerPopup) {
+        closeCustomerPopup();
+        return;
+      }
 
       onBack?.();
     };
@@ -1197,7 +1294,7 @@ const POSPayment: React.FC<POSPaymentProps> = ({
     return () => {
       window.removeEventListener("keydown", handleEscape);
     };
-  }, [closePaymentError, onBack, paymentError]);
+  }, [closePaymentError, onBack, paymentError, showCustomerPopup]);
 
   const mixedCombined = calculateMixedTotal();
   const mixedRemaining = total - mixedCombined;
@@ -1220,32 +1317,90 @@ const POSPayment: React.FC<POSPaymentProps> = ({
       >
         <div
           style={{
-            padding: "24px 24px 16px",
+            padding: selectedCustomer ? "24px 24px 30px" : "24px 24px 16px",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
             borderBottom: "1px solid var(--gray-300, #d7dee8)",
+            position: "relative",
           }}
         >
           <h1 style={{ fontSize: 18, fontWeight: 700 }}>ตั๋วออเดอร์</h1>
-          <div
+          {selectedCustomer ? (
+            <div
+              style={{
+                position: "absolute",
+                left: 24,
+                bottom: 8,
+                maxWidth: 210,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 13,
+                fontWeight: 700,
+                color: "var(--blue-600, #1b4b8f)",
+              }}
+            >
+              <span
+                style={{
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {getCustomerName(selectedCustomer)}
+              </span>
+              <button
+                type="button"
+                onClick={clearSelectedCustomer}
+                title="ล้างลูกค้า"
+                aria-label="ล้างลูกค้า"
+                style={{
+                  width: 18,
+                  height: 18,
+                  borderRadius: 999,
+                  border: "none",
+                  background: "transparent",
+                  color: "var(--blue-600, #1b4b8f)",
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 14,
+                  lineHeight: 1,
+                  padding: 0,
+                  flexShrink: 0,
+                }}
+              >
+                ×
+              </button>
+            </div>
+          ) : null}
+          <button
+            type="button"
+            onClick={openCustomerPopup}
+            title="เลือกลูกค้า"
+            aria-label="เลือกลูกค้า"
             style={{
               width: 34,
               height: 34,
               borderRadius: 10,
               background: "var(--blue-100, #e8f0fe)",
               color: "var(--blue-600, #1b4b8f)",
+              border: "none",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               fontSize: 16,
+              cursor: "pointer",
             }}
           >
             +
-          </div>
+          </button>
         </div>
 
-        <div style={{ flex: "0 0 auto", padding: "12px 24px 0" }}>
+        <div style={{ display: "none" }}>
           <div style={{ borderBottom: "1px dashed var(--gray-300, #d7dee8)", paddingBottom: 12, textAlign: "center" }}>
             <div style={{ fontSize: 17, fontWeight: 800, color: "var(--ink, #0b1726)" }}>
               {storeData?.store.store_name || "ร้านค้า"}
@@ -2010,6 +2165,21 @@ const POSPayment: React.FC<POSPaymentProps> = ({
           </div>
         </div>
       )}
+
+      {showCustomerPopup ? (
+        <CustomerPickerPopup
+          searchInputRef={customerSearchRef}
+          searchQuery={customerSearchQuery}
+          onSearchQueryChange={setCustomerSearchQuery}
+          customers={[]}
+          selectedCustomer={selectedCustomer}
+          isLoading={false}
+          error={null}
+          onClose={closeCustomerPopup}
+          onRefresh={() => undefined}
+          onSelectCustomer={selectCustomer}
+        />
+      ) : null}
 
       {paymentError !== null && (
         <div

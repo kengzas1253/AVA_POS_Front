@@ -1,4 +1,4 @@
-import { IconFolderOpen, IconX } from "@tabler/icons-react";
+import { IconFolderOpen, IconTrash, IconX } from "@tabler/icons-react";
 
 export interface HeldBillSummary {
   id: number | string;
@@ -20,6 +20,7 @@ interface HeldBillsPopupProps {
   onClose: () => void;
   onRefresh: () => void | Promise<void>;
   onOpenHeldBill: (bill: HeldBillSummary) => void | Promise<void>;
+  onDeleteHeldBill?: (bill: HeldBillSummary) => void | Promise<void>;
 }
 
 export default function HeldBillsPopup({
@@ -32,6 +33,7 @@ export default function HeldBillsPopup({
   onClose,
   onRefresh,
   onOpenHeldBill,
+  onDeleteHeldBill,
 }: HeldBillsPopupProps) {
   return (
     <div
@@ -102,13 +104,37 @@ export default function HeldBillsPopup({
                           {bill.hold_no || "-"} · {formatHeldBillDate(bill.created_at)}
                         </p>
                       </div>
-                      <div className="text-right">
+                      <div className="flex shrink-0 items-start gap-3">
+                      <div className="shrink-0 text-right">
                         <p className="font-bold text-slate-900">
                           {formatBaht(Number(bill.total_amount) || 0)}
                         </p>
                         <p className="mt-1 text-xs text-slate-500">
                           {Number(bill.item_count) || 0} รายการ / {Number(bill.total_qty) || 0} ชิ้น
                         </p>
+                      </div>
+                      {onDeleteHeldBill ? (
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            void onDeleteHeldBill(bill);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ") return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            void onDeleteHeldBill(bill);
+                          }}
+                          className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-red-50 hover:text-red-600"
+                          title="ลบบิลที่พัก"
+                          aria-label="ลบบิลที่พัก"
+                        >
+                          <IconTrash size={17} />
+                        </span>
+                      ) : null}
                       </div>
                     </div>
                     {isOpening ? (

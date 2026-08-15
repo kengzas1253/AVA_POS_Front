@@ -237,7 +237,7 @@ interface HeldBill {
   id: number | string;
   hold_no?: string | null;
   hold_name?: string | null;
-  customer_id?: string | null;
+  customer_id?: number | string | null;
   item_count?: number | string | null;
   total_qty?: number | string | null;
   total_amount?: number | string | null;
@@ -247,6 +247,8 @@ interface HeldBill {
 interface HeldBillItem {
   id?: number | string;
   product_id?: number | string | null;
+  productUnitId?: number | string | null;
+  product_unit_id?: number | string | null;
   sku?: string | null;
   barcode?: string | null;
   product_name?: string | null;
@@ -279,7 +281,7 @@ interface HeldBillsResponse {
 }
 
 interface HeldBillDetailResponse {
-  data?: HeldBillDetail;
+  data?: HeldBillDetail | { held_bill?: HeldBillDetail };
   held_bill?: HeldBillDetail;
   message?: string;
 }
@@ -1125,6 +1127,21 @@ const getHeldBillMachineId = (storedDevice: unknown): string | null => {
     ? machineId.trim()
     : null;
 };
+
+const normalizeLookupId = (value: unknown): string | null => {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  return null;
+};
+
+const isHeldBillDetail = (value: unknown): value is HeldBillDetail =>
+  Boolean(value && typeof value === "object" && "id" in value);
 
 const getHeldBillErrorMessage = (error: unknown, fallback: string): string => {
   if (error instanceof TypeError) {
@@ -1982,7 +1999,17 @@ const loadHeldBillDetail = async (
   }
 
   if ("data" in data && data.data) {
-    return data.data;
+    if (
+      typeof data.data === "object" &&
+      "held_bill" in data.data &&
+      data.data.held_bill
+    ) {
+      return data.data.held_bill;
+    }
+
+    if (isHeldBillDetail(data.data)) {
+      return data.data;
+    }
   }
 
   return data as HeldBillDetail;
@@ -2015,10 +2042,12 @@ const mapHeldBillItemToCartItem = (item: HeldBillItem): CartItem => {
   const qty = Number(item.qty) || 0;
   const unitPrice = Number(item.unit_price ?? item.sale_price ?? 0);
   const productName = item.product_name ?? item.name ?? "-";
+  const productUnitId = item.productUnitId ?? item.product_unit_id ?? null;
 
   return {
-    id: item.product_id ?? item.id,
+    id: productUnitId ?? item.product_id ?? item.id,
     product_id: item.product_id ?? item.id ?? null,
+    productUnitId,
     sku: item.sku ?? null,
     barcode: item.barcode ?? null,
     name: productName,
@@ -2775,6 +2804,28 @@ export default function PosLandingPages() {
     setHeldBillsError(null);
   };
 
+  const handleDeleteHeldBill = async (heldBill: HeldBill) => {
+    const shouldDelete = window.confirm("ต้องการลบบิลที่พักนี้หรือไม่?");
+    if (!shouldDelete) return;
+
+    setOpeningHeldBillId(heldBill.id);
+    setHeldBillsError(null);
+
+    try {
+      await deleteHeldBill(heldBill.id);
+      setHeldBills((current) => current.filter((bill) => bill.id !== heldBill.id));
+      if (activeHeldBillId === heldBill.id) {
+        setActiveHeldBillId(null);
+      }
+    } catch (error) {
+      setHeldBillsError(
+        getHeldBillErrorMessage(error, "ลบบิลที่พักไม่สำเร็จ"),
+      );
+    } finally {
+      setOpeningHeldBillId(null);
+    }
+  };
+
   const openHeldBill = async (heldBill: HeldBill) => {
     if (cart.length > 0) {
       const shouldReplace = window.confirm(
@@ -2791,11 +2842,21 @@ export default function PosLandingPages() {
     try {
       const detail = await loadHeldBillDetail(heldBill.id);
       const items = detail.held_bill_items ?? detail.items ?? [];
+      if (!items.length) {
+        throw new Error("ไม่พบรายการสินค้าในบิลที่พักนี้");
+      }
+
       const nextCart = items.map(mapHeldBillItemToCartItem);
       await restoreHeldBillCustomer(detail.customer_id);
 
-      setCart(nextCart);
-      setSelectedCartItemName(nextCart[0]?.name ?? null);
+      const committed = await commitCartChange(nextCart, {
+        selectedName: nextCart[0]?.name ?? null,
+      });
+      if (!committed) {
+        setHeldBillsError("ไม่สามารถนำรายการบิลที่พักลงตะกร้าได้");
+        return;
+      }
+
       setActiveHeldBillId(heldBill.id);
       setShowHeldBillsModal(false);
     } catch (error) {
@@ -3176,28 +3237,40 @@ export default function PosLandingPages() {
     closeCustomerPopup();
   };
 
-  const restoreHeldBillCustomer = async (customerCode?: string | null) => {
-    const normalizedCustomerCode =
-      typeof customerCode === "string" && customerCode.trim()
-        ? customerCode.trim()
-        : null;
+  const restoreHeldBillCustomer = async (
+    customerIdOrCode?: number | string | null,
+  ) => {
+    const normalizedCustomerIdOrCode = normalizeLookupId(customerIdOrCode);
 
-    if (!normalizedCustomerCode) {
-      clearSelectedCustomer();
+    if (!normalizedCustomerIdOrCode) {
+      setSelectedCustomer(null);
+      await window.electronStore.set(SELECTED_POS_CUSTOMER_KEY, null);
       return;
     }
 
-    const customerList = await loadCustomers();
-    const matchedCustomer =
-      customerList.find(
-        (customer) => customer.customer_code === normalizedCustomerCode,
-      ) ?? null;
+    try {
+      const customerList = await loadCustomers();
+      const matchedCustomer =
+        customerList.find((customer) => {
+          const customerId = normalizeLookupId(customer.id);
+          const customerCode = normalizeLookupId(customer.customer_code);
 
-    setSelectedCustomer(matchedCustomer);
-    void window.electronStore.set(
-      SELECTED_POS_CUSTOMER_KEY,
-      matchedCustomer,
-    );
+          return (
+            customerId === normalizedCustomerIdOrCode ||
+            customerCode === normalizedCustomerIdOrCode
+          );
+        }) ?? null;
+
+      setSelectedCustomer(matchedCustomer);
+      await window.electronStore.set(
+        SELECTED_POS_CUSTOMER_KEY,
+        matchedCustomer,
+      );
+    } catch (error) {
+      console.error("Restore held bill customer error:", error);
+      setSelectedCustomer(null);
+      await window.electronStore.set(SELECTED_POS_CUSTOMER_KEY, null);
+    }
   };
 
   const confirmQuitApp = () => {
@@ -3624,6 +3697,8 @@ export default function PosLandingPages() {
         if (sourceCartRef.current.length > 0) {
           recalculateCartForCustomerChange();
         }
+      } else if (!isCancelled) {
+        setSelectedCustomer(null);
       }
     };
 
@@ -4064,6 +4139,7 @@ export default function PosLandingPages() {
         subtotal={subTotal}
         discount={discountAmount}
         total={total}
+        heldBillId={activeHeldBillId}
         onBack={() => setCurrentPage("pos")}
         onPaymentComplete={() => {
           clearSelectedCustomer();
@@ -4840,6 +4916,7 @@ export default function PosLandingPages() {
             onClose={closeHeldBillsModal}
             onRefresh={fetchHeldBillList}
             onOpenHeldBill={openHeldBill}
+            onDeleteHeldBill={handleDeleteHeldBill}
           />
         ) : null}
 

@@ -655,6 +655,19 @@ const createHeldBill = async (payload: HeldBillPayload): Promise<void> => {
   }
 };
 
+const deleteHeldBill = async (id: HeldBillSummary["id"]): Promise<void> => {
+  const response = await authorizedApiFetch(`/held-bills/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  const data = (await response.json().catch(() => ({}))) as {
+    message?: string;
+  };
+
+  if (!response.ok) {
+    throw new Error(data.message || `ลบบิลที่พักไม่สำเร็จ (${response.status})`);
+  }
+};
+
 const mapHeldBillItemToScanItem = (
   item: HeldBillItem,
   index: number,
@@ -892,6 +905,9 @@ export default function POSScanTablePage() {
   const [isLoadingHeldBills, setIsLoadingHeldBills] = useState(false);
   const [heldBillsError, setHeldBillsError] = useState<string | null>(null);
   const [openingHeldBillId, setOpeningHeldBillId] = useState<
+    HeldBillSummary["id"] | null
+  >(null);
+  const [activeHeldBillId, setActiveHeldBillId] = useState<
     HeldBillSummary["id"] | null
   >(null);
   const [holdBillName, setHoldBillName] = useState("");
@@ -1206,6 +1222,7 @@ export default function POSScanTablePage() {
     setScanItems([]);
     setSelectedScanItemId(null);
     setScanMessage(null);
+    setActiveHeldBillId(null);
     setShowClearConfirm(false);
     focusScannerInput();
   };
@@ -1750,6 +1767,29 @@ export default function POSScanTablePage() {
     focusScannerInput();
   };
 
+  const handleDeleteHeldBill = async (heldBill: HeldBillSummary) => {
+    const shouldDelete = window.confirm("ต้องการลบบิลที่พักนี้หรือไม่?");
+    if (!shouldDelete) return;
+
+    setOpeningHeldBillId(heldBill.id);
+    setHeldBillsError(null);
+
+    try {
+      await deleteHeldBill(heldBill.id);
+      setHeldBills((current) => current.filter((bill) => bill.id !== heldBill.id));
+      if (activeHeldBillId === heldBill.id) {
+        setActiveHeldBillId(null);
+      }
+    } catch (error) {
+      setHeldBillsError(
+        getHeldBillErrorMessage(error, "ลบบิลที่พักไม่สำเร็จ"),
+      );
+    } finally {
+      setOpeningHeldBillId(null);
+      focusScannerInput();
+    }
+  };
+
   const openHeldBill = async (heldBill: HeldBillSummary) => {
     if (scanItems.length > 0) {
       const shouldReplace = window.confirm(
@@ -1766,6 +1806,7 @@ export default function POSScanTablePage() {
       const items = detail.held_bill_items ?? detail.items ?? [];
       const nextItems = items.map(mapHeldBillItemToScanItem);
       await commitScanItemsChange(nextItems, nextItems.at(-1)?.id ?? null);
+      setActiveHeldBillId(heldBill.id);
       setShowHeldBillsModal(false);
       setScanMessage(null);
       focusScannerInput();
@@ -1804,6 +1845,8 @@ export default function POSScanTablePage() {
         "id" in storedCustomer
       ) {
         setSelectedCustomer(storedCustomer as PosCustomer);
+      } else if (!isCancelled) {
+        setSelectedCustomer(null);
       }
     };
 
@@ -1814,6 +1857,35 @@ export default function POSScanTablePage() {
       isCancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (currentPage !== "pos") return;
+
+    let isCancelled = false;
+
+    const restoreSelectedCustomer = async () => {
+      const storedCustomer = await window.electronStore.get(
+        SELECTED_POS_CUSTOMER_KEY,
+      );
+
+      if (
+        !isCancelled &&
+        storedCustomer &&
+        typeof storedCustomer === "object" &&
+        "id" in storedCustomer
+      ) {
+        setSelectedCustomer(storedCustomer as PosCustomer);
+      } else if (!isCancelled) {
+        setSelectedCustomer(null);
+      }
+    };
+
+    void restoreSelectedCustomer();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentPage]);
 
   useEffect(() => {
     if (!showCustomerPopup) return;
@@ -2608,6 +2680,7 @@ export default function POSScanTablePage() {
         subtotal={subTotal}
         discount={discountAmount}
         total={totalAmount}
+        heldBillId={activeHeldBillId}
         onBack={() => setCurrentPage("pos")}
         onPaymentComplete={() => {
           clearSelectedCustomer();
@@ -2979,6 +3052,7 @@ export default function POSScanTablePage() {
           onClose={closeHeldBillsModal}
           onRefresh={fetchHeldBillList}
           onOpenHeldBill={openHeldBill}
+          onDeleteHeldBill={handleDeleteHeldBill}
         />
       ) : null}
 
